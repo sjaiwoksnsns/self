@@ -2001,6 +2001,8 @@ PANEL_ITEMS = [
     ("snoopers", "🕵️ لیست فضول‌ها"),
     ("miowy_group", "🐱 میویی"),
     ("mozy_group", "🍌 موزی"),
+    ("ph_dl", "دانلودر PH"),
+    ("xvid_dl", "دانلودر Xvid"),
 ]
 PANEL_LABELS = dict(PANEL_ITEMS)
 PANEL_LABELS.update({
@@ -2022,6 +2024,8 @@ PANEL_DIRECT_ACTIONS = {
     "channel_save": "cs_open",
     "cleanup": "cleanup",
     "premium_emoji": "premium_emoji_open",
+    "ph_dl": "ph_dl_info",
+    "xvid_dl": "xvid_dl_info",
 }
 
 
@@ -2318,10 +2322,16 @@ def _panel_key_page(key):
     for i, items in enumerate(_panel_pages()):
         if any(k == key for k, _ in items):
             return i
-    # Hidden items in the Miowy/Mozy submenus belong to page 6.
     if key in {item_key for _, feature_keys in PANEL_GROUPS.values() for item_key in feature_keys}:
         return len(_panel_pages()) - 1
     return 0
+
+
+def _panel_parent_key(key):
+    for group_key, (_, feature_keys) in PANEL_GROUPS.items():
+        if key in feature_keys:
+            return group_key
+    return None
 
 
 # Toggle/font actions that live inside an item submenu, mapped back to the
@@ -2671,8 +2681,10 @@ async def _panel_show_group(event, uid, key):
     rows = []
     for size in _panel_chunk_pattern(len(feature_keys)):
         start = sum(len(row) for row in rows)
-        rows.append([btn(PANEL_LABELS[item_key], _self_cb(uid, f"pit:{page_idx}:{item_key}"), "primary")
-                     for item_key in feature_keys[start:start + size]])
+        rows.append([
+            btn(PANEL_LABELS[item_key], _self_cb(uid, f"pit:{page_idx}:{item_key}"), "primary")
+            for item_key in feature_keys[start:start + size]
+        ])
     rows.append([btn("بازگشت", _self_cb(uid, f"pg:{page_idx}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])])
     await safe_callback_edit(event, f"<b>{html.escape(title)}</b>\n\nقابلیت موردنظر را انتخاب کن:", parse_mode="html", buttons=rows)
 
@@ -2708,7 +2720,8 @@ async def _panel_show_item(event, uid, key, extra_text=None):
         rows.append([btn("📖 توضیحات", _self_cb(uid, f"pdesc:{page_idx}:{key}"), "primary")])
     if cmds:
         rows.append([btn("⌨️ دستورات", _self_cb(uid, f"pcmd:{page_idx}:{key}"), "primary")])
-    rows.append([btn("🏠 صفحه اصلی", _self_cb(uid, f"pg:{page_idx}"), "danger", icon=PREMIUM_EMOJI["home"][0])])
+    parent_key = _panel_parent_key(key)
+    rows.append([btn("بازگشت", _self_cb(uid, f"pgrp:{parent_key}") if parent_key else _self_cb(uid, f"pg:{page_idx}"), "danger", icon=PREMIUM_EMOJI["home"][0])])
     title = PANEL_LABELS.get(key, key)
     caption = f"<b>{html.escape(title)}</b>"
     if extra_text:
@@ -3102,7 +3115,9 @@ def _htx_calc_screen(uid):
         "<code>.e 2*2</code>",
         "<code>.e 30÷2</code>",
     )
-    buttons = [[btn("بازگشت", _self_cb(uid, f"pg:{PANEL_CALC_PAGE}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
+    if back_page is None:
+        back_page = PANEL_CALC_PAGE
+    buttons = [[btn("بازگشت", _self_cb(uid, f"pg:{back_page}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
     return text, buttons
 
 
@@ -3397,6 +3412,8 @@ _dl_bg_tasks = set()
 
 _DL_HOSTS = {
     "instagram": ("instagram.com", "instagr.am"),
+    "ph": ("pornhub.com", "pornhub.org"),
+    "xvid": ("xvideos.com", "xvideos2.com"),
 }
 _DL_HTTP_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 _DL_BARE_RE = re.compile(
@@ -3416,8 +3433,8 @@ _DL_ERRORS = {
 }
 
 
-def _htx_dl_screen(uid, title, example, hint, note):
-    """(text, buttons) of a downloader button on page 4 of the panel."""
+def _htx_dl_screen(uid, title, example, hint, note, back_page=None):
+    """Build a downloader screen with an explicit one-step back target."""
     text = _htx_stack(
         f"{HTX_TAG} • {title}",
         "دستورات",
@@ -3446,10 +3463,27 @@ def _htx_ig_dl_screen(uid):
     return _htx_dl_screen(
         uid,
         "دانلودر اینستاگرام",
-        ".دانلود https://www.instagram.com/reel/…",
+        ".اینستا https://www.instagram.com/reel/…",
         "لینک ریل یا پست اینستاگرام را بعد از دستور بنویس",
         "ویدیو یا عکس همین‌جا برایت ارسال می‌شود",
     )
+
+
+def _htx_extra_dl_screen(uid, title, command, example, hint):
+    # These buttons are direct children of page 6, so their single back step
+    # is page 6, not the panel home screen.
+    return _htx_dl_screen(uid, title, f"{command} {example}", hint,
+                          "فایل همین‌جا برایت ارسال می‌شود", back_page=len(_panel_pages()) - 1)
+
+
+def _htx_ph_dl_screen(uid):
+    return _htx_extra_dl_screen(uid, "دانلودر PH", ".ph", "https://pornhub.com/view_video.php?viewkey=…",
+                                "لینک Pornhub را بعد از دستور بنویس")
+
+
+def _htx_xvid_dl_screen(uid):
+    return _htx_extra_dl_screen(uid, "دانلودر Xvid", ".xvid", "https://xvideos.com/video/…",
+                                 "لینک Xvid را بعد از دستور بنویس")
 
 
 def _htx_snap_screen(uid):
@@ -3575,8 +3609,8 @@ def _dl_caption(platform):
     return _htx_quote(f"{HTX_TAG} Self Bot\n{label}")
 
 
-async def _self_download_command(event, uid, arg):
-    """«.دانلود <لینک اینستاگرام>»"""
+async def _self_download_command(event, uid, arg, expected_platform=None):
+    """Downloader commands: .اینستا, .ph, and .xvid."""
     uid = int(uid)
 
     async def say(text):
@@ -3587,8 +3621,8 @@ async def _self_download_command(event, uid, arg):
     if not url:
         await say(_DL_ERRORS["need_url"])
         return
-    if not platform:
-        await say("❌ فقط لینک اینستاگرام پشتیبانی می‌شود")
+    if not platform or (expected_platform and platform != expected_platform):
+        await say("❌ لینک با دانلودر انتخاب‌شده سازگار نیست")
         return
 
     # One download at a time per account, so answers can never be mixed up.
@@ -6207,7 +6241,7 @@ async def handle_self_panel_callback(event):
             f"<b>{html.escape(title)}</b> — {heading}\n\n{body}",
             parse_mode="html",
             buttons=[
-                [btn("بازگشت", _self_cb(uid, f"pit:{page_idx}:{key}"), "primary", icon=PREMIUM_EMOJI["self_back"][0])],
+                [btn("بازگشت", _self_cb(uid, f"pgrp:{_panel_parent_key(key)}") if _panel_parent_key(key) else _self_cb(uid, f"pit:{page_idx}:{key}"), "primary", icon=PREMIUM_EMOJI["self_back"][0])],
                 [btn("🏠 صفحه اصلی", _self_cb(uid, f"pg:{page_idx}"), "danger", icon=PREMIUM_EMOJI["home"][0])],
             ],
         )
@@ -6224,6 +6258,14 @@ async def handle_self_panel_callback(event):
     if action in ("fe_menu", "fe_enemy", "fe_friend", "vn_open"):
         text, buttons = _htx_fe_screen(uid, action)
         await safe_callback_edit(event, text, parse_mode="html", buttons=buttons)
+        return True
+
+    if action.startswith("pgrp:"):
+        group_key = action.split(":", 1)[1]
+        if group_key in PANEL_GROUPS:
+            await _panel_show_group(event, uid, group_key)
+        else:
+            await safe_answer(event, "❌ این بخش پیدا نشد.", True)
         return True
 
     if action.startswith("pit:"):
@@ -6554,6 +6596,16 @@ async def handle_self_panel_callback(event):
 
     if action == "ig_dl_info":
         text, buttons = _htx_ig_dl_screen(uid)
+        await safe_callback_edit(event, text, parse_mode="html", buttons=buttons)
+        return True
+
+    if action == "ph_dl_info":
+        text, buttons = _htx_ph_dl_screen(uid)
+        await safe_callback_edit(event, text, parse_mode="html", buttons=buttons)
+        return True
+
+    if action == "xvid_dl_info":
+        text, buttons = _htx_xvid_dl_screen(uid)
         await safe_callback_edit(event, text, parse_mode="html", buttons=buttons)
         return True
 
@@ -11263,9 +11315,15 @@ async def _self_run_commands(event, uid, orig, text, low):
     if await _self_calc_command(event, uid, text):
         return True
 
-    # «.دانلود <لینک>» — Instagram / YouTube downloader (page 4 of the panel).
-    # A bare «.دانلود» stays the reply-to-message saver further below.
-    m = re.fullmatch(r"دانلود\s+(\S.*)", text.strip(), re.DOTALL)
+    for command, platform in (("ph", "ph"), ("xvid", "xvid")):
+        m = re.fullmatch(rf"{command}\s+(\S.*)", text.strip(), re.DOTALL | re.IGNORECASE)
+        if m:
+            await _self_download_command(event, uid, m.group(1), expected_platform=platform)
+            return True
+
+    # «.اینستا <لینک>» — Instagram downloader.
+    # A bare «.دانلود» stays the reply-to-message saver below.
+    m = re.fullmatch(r"اینستا\s+(\S.*)", text.strip(), re.DOTALL)
     if m:
         await _self_download_command(event, uid, m.group(1))
         return True
