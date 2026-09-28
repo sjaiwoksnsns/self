@@ -2003,6 +2003,7 @@ PANEL_ITEMS = [
     ("mozy_group", "🍌 موزی"),
     ("ph_dl", "دانلودر PH"),
     ("xvid_dl", "دانلودر Xvid"),
+    ("xnxx_dl", "دانلودر XNXX"),
 ]
 PANEL_LABELS = dict(PANEL_ITEMS)
 PANEL_LABELS.update({
@@ -2026,6 +2027,7 @@ PANEL_DIRECT_ACTIONS = {
     "premium_emoji": "premium_emoji_open",
     "ph_dl": "ph_dl_info",
     "xvid_dl": "xvid_dl_info",
+    "xnxx_dl": "xnxx_dl_info",
 }
 
 
@@ -3115,9 +3117,7 @@ def _htx_calc_screen(uid):
         "<code>.e 2*2</code>",
         "<code>.e 30÷2</code>",
     )
-    if back_page is None:
-        back_page = PANEL_CALC_PAGE
-    buttons = [[btn("بازگشت", _self_cb(uid, f"pg:{back_page}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
+    buttons = [[btn("بازگشت", _self_cb(uid, f"pg:{PANEL_CALC_PAGE}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
     return text, buttons
 
 
@@ -3414,6 +3414,7 @@ _DL_HOSTS = {
     "instagram": ("instagram.com", "instagr.am"),
     "ph": ("pornhub.com", "pornhub.org"),
     "xvid": ("xvideos.com", "xvideos2.com"),
+    "xnxx": ("xnxx.com", "www.xnxx.com"),
 }
 _DL_HTTP_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
 _DL_BARE_RE = re.compile(
@@ -3433,8 +3434,8 @@ _DL_ERRORS = {
 }
 
 
-def _htx_dl_screen(uid, title, example, hint, note, back_page=None):
-    """Build a downloader screen with an explicit one-step back target."""
+def _htx_dl_screen(uid, title, example, hint, note):
+    """(text, buttons) of a downloader button on page 4 of the panel."""
     text = _htx_stack(
         f"{HTX_TAG} • {title}",
         "دستورات",
@@ -3473,7 +3474,7 @@ def _htx_extra_dl_screen(uid, title, command, example, hint):
     # These buttons are direct children of page 6, so their single back step
     # is page 6, not the panel home screen.
     return _htx_dl_screen(uid, title, f"{command} {example}", hint,
-                          "فایل همین‌جا برایت ارسال می‌شود", back_page=len(_panel_pages()) - 1)
+                          "فایل همین‌جا برایت ارسال می‌شود")
 
 
 def _htx_ph_dl_screen(uid):
@@ -3484,6 +3485,11 @@ def _htx_ph_dl_screen(uid):
 def _htx_xvid_dl_screen(uid):
     return _htx_extra_dl_screen(uid, "دانلودر Xvid", ".xvid", "https://xvideos.com/video/…",
                                  "لینک Xvid را بعد از دستور بنویس")
+
+
+def _htx_xnxx_dl_screen(uid):
+    return _htx_extra_dl_screen(uid, "دانلودر XNXX", ".xnxx", "https://xnxx.com/video/…",
+                                "لینک XNXX را بعد از دستور بنویس")
 
 
 def _htx_snap_screen(uid):
@@ -6606,6 +6612,11 @@ async def handle_self_panel_callback(event):
 
     if action == "xvid_dl_info":
         text, buttons = _htx_xvid_dl_screen(uid)
+        await safe_callback_edit(event, text, parse_mode="html", buttons=buttons)
+        return True
+
+    if action == "xnxx_dl_info":
+        text, buttons = _htx_xnxx_dl_screen(uid)
         await safe_callback_edit(event, text, parse_mode="html", buttons=buttons)
         return True
 
@@ -11315,7 +11326,7 @@ async def _self_run_commands(event, uid, orig, text, low):
     if await _self_calc_command(event, uid, text):
         return True
 
-    for command, platform in (("ph", "ph"), ("xvid", "xvid")):
+    for command, platform in (("ph", "ph"), ("xvid", "xvid"), ("xnxx", "xnxx")):
         m = re.fullmatch(rf"{command}\s+(\S.*)", text.strip(), re.DOTALL | re.IGNORECASE)
         if m:
             await _self_download_command(event, uid, m.group(1), expected_platform=platform)
