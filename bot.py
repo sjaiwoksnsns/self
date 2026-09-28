@@ -435,7 +435,7 @@ def premium_ui_text(text):
 API_ID = 32955870
 API_HASH = "a40ba705a967c3c8e490f4684f42256a"
 
-BOT_TOKEN = "8916268511:AAFWoxqnCM-PgaU30JDHG8fcYljOvLDyWOE"
+BOT_TOKEN = "8236465539:AAGZrugDYOjYz5sN7fK86VDQZ8DGEo_J0R8"
 ADMINS = [7727625618]
 
 CARD_NUMBER = "5022291579049451"
@@ -13719,6 +13719,10 @@ async def _handle_daily_diamond_claim(event, uid):
 async def _on_bot_added_to_group(event):
     """Handle only a ChatAction where this bot is among added users."""
     if not (getattr(event, "is_group", False) or getattr(event, "is_channel", False)):
+        return False
+    # Broadcast channels are exempt: the bot may be added to any channel
+    # (e.g. forced-join channels). Only groups/supergroups are restricted.
+    if getattr(event, "is_channel", False) and not getattr(event, "is_group", False):
         return False
     if not (getattr(event, "user_added", False) or getattr(event, "user_joined", False)):
         return False
