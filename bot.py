@@ -1999,15 +1999,30 @@ PANEL_ITEMS = [
     ("channel_save", "💾 ذخیره چنل"),
     ("premium_emoji", "💎 ایموجی پریمیوم"),
     ("snoopers", "🕵️ لیست فضول‌ها"),
-    ("miowy_pishi", "🐱 پیشی خودکار"),
-    ("miowy_mew", "😼 میو خودکار"),
-    ("miowy_fishing", "🎣 ماهیگیری خودکار"),
-    ("miowy_status", "😼 وضعیت میویی"),
-    ("mozy_banana", "🍌 موز خودکار"),
-    ("mozy_spin", "🎰 اسپین خودکار"),
-    ("mozy_status", "📢 وضعیت موزی"),
+    # Page 6 groups the related Miowy and Mozy features into clean submenus.
+    # The original feature keys remain available inside each submenu.
+    ("miowy_group", "🐱 میویی"),
+    ("mozy_group", "🍌 موزی"),
 ]
 PANEL_LABELS = dict(PANEL_ITEMS)
+PANEL_LABELS.update({
+    "miowy_pishi": "🐱 پیشی خودکار",
+    "miowy_mew": "😼 میو خودکار",
+    "miowy_fishing": "🎣 ماهیگیری خودکار",
+    "miowy_status": "😼 وضعیت میویی",
+    "mozy_banana": "🍌 موز خودکار",
+    "mozy_spin": "🎰 اسپین خودکار",
+    "mozy_status": "📢 وضعیت موزی",
+})
+
+PANEL_GROUPS = {
+    "miowy_group": ("🐱 میویی", [
+        "miowy_pishi", "miowy_mew", "miowy_fishing", "miowy_status",
+    ]),
+    "mozy_group": ("🍌 موزی", [
+        "mozy_banana", "mozy_spin", "mozy_status",
+    ]),
+}
 
 # Items that already open a full dedicated screen elsewhere in this file —
 # tapping them in the grid jumps straight there instead of a mini submenu.
@@ -2657,7 +2672,36 @@ async def _panel_show_premium_channel_info(event, uid, idx):
     await safe_callback_edit(event, _htx_stack(*blocks), parse_mode="html", buttons=rows)
 
 
+async def _panel_show_group(event, uid, key):
+    """Show the Miowy or Mozy feature submenu from page 6."""
+    group = PANEL_GROUPS.get(key)
+    if not group:
+        await safe_answer(event, "❌ این بخش پیدا نشد.", True)
+        return
+    title, feature_keys = group
+    page_idx = _panel_key_page(key)
+    rows = []
+    for size in _panel_chunk_pattern(len(feature_keys)):
+        start = len([item for row in rows for item in row])
+        rows.append([
+            btn(PANEL_LABELS[item_key], _self_cb(uid, f"pit:{page_idx}:{item_key}"), "primary")
+            for item_key in feature_keys[start:start + size]
+        ])
+    rows.append([
+        btn("🏠 بازگشت به صفحه ۶", _self_cb(uid, "pg:5"), "danger", icon=PREMIUM_EMOJI["self_back"][0])
+    ])
+    await safe_callback_edit(
+        event,
+        f"<b>{html.escape(title)}</b>\n\nقابلیت موردنظر را انتخاب کن:",
+        parse_mode="html",
+        buttons=rows,
+    )
+
+
 async def _panel_show_item(event, uid, key, extra_text=None):
+    if key in PANEL_GROUPS:
+        await _panel_show_group(event, uid, key)
+        return
     if key == "clock":
         await _panel_show_clock(event, uid)
         return
@@ -6201,6 +6245,11 @@ async def handle_self_panel_callback(event):
     if action in ("fe_menu", "fe_enemy", "fe_friend", "vn_open"):
         text, buttons = _htx_fe_screen(uid, action)
         await safe_callback_edit(event, text, parse_mode="html", buttons=buttons)
+        return True
+
+    if action.startswith("pgrp:"):
+        key = action.split(":", 1)[1]
+        await _panel_show_group(event, uid, key)
         return True
 
     if action.startswith("pit:"):
