@@ -435,7 +435,7 @@ def premium_ui_text(text):
 API_ID = 32955870
 API_HASH = "a40ba705a967c3c8e490f4684f42256a"
 
-BOT_TOKEN = "8236465539:AAGZrugDYOjYz5sN7fK86VDQZ8DGEo_J0R8"
+BOT_TOKEN = "8916268511:AAFWoxqnCM-PgaU30JDHG8fcYljOvLDyWOE"
 ADMINS = [7727625618]
 
 CARD_NUMBER = "5022291579049451"
@@ -14032,6 +14032,22 @@ async def _on_bot_added_to_group(event):
             users = await event.get_users()
             affected_ids = {int(getattr(x, "id", 0)) for x in (users or [])}
         if my_id not in affected_ids:
+            return False
+
+        # Broadcast CHANNELS are exempt: the bot must be able to stay there
+        # (premium-emoji publishing, forced-join channels, ...). Only
+        # groups/supergroups are restricted to the official group. If the
+        # chat type cannot be determined, do not leave.
+        chat_obj = None
+        try:
+            chat_obj = await event.get_chat()
+        except Exception:
+            chat_obj = None
+        if isinstance(chat_obj, types.Channel) and getattr(chat_obj, "broadcast", False):
+            print(f"[BOT JOIN] broadcast channel {event.chat_id}: staying")
+            return False
+        if chat_obj is None and getattr(event, "is_group", None) is not True:
+            print(f"[BOT JOIN] chat type unknown for {event.chat_id}: not leaving")
             return False
 
         await resolve_official_group_id()
