@@ -435,7 +435,7 @@ def premium_ui_text(text):
 API_ID = 32955870
 API_HASH = "a40ba705a967c3c8e490f4684f42256a"
 
-BOT_TOKEN = "8916268511:AAFWoxqnCM-PgaU30JDHG8fcYljOvLDyWOE"
+BOT_TOKEN = "8236465539:AAGZrugDYOjYz5sN7fK86VDQZ8DGEo_J0R8"
 ADMINS = [7727625618]
 
 CARD_NUMBER = "5022291579049451"
@@ -1013,8 +1013,8 @@ def _gift_admin_menu_text():
 def _gift_admin_menu_buttons():
     return [
         [
-            btn("ساخت کد هدیه", b"gift_create", "success", icon=PREMIUM_EMOJI["gift"][0]),
-            btn("کدهای جاری", b"gift_manage", "primary", icon=PREMIUM_EMOJI["gift"][0]),
+            btn("ساخت", b"gift_create", "success", icon=PREMIUM_EMOJI["gift"][0]),
+            btn("مدیریت", b"gift_manage", "primary", icon=PREMIUM_EMOJI["gift"][0]),
         ],
         [btn("بازگشت", b"admin_panel", "danger", icon=PREMIUM_EMOJI["self_back"][0])],
     ]
@@ -1360,7 +1360,7 @@ def main_buttons(user_id: int):
             Button.url("پشتیبانی", "https://t.me/HusteRIX", style="danger", icon=5258337316715373336),
             Button.url("چنل", "https://t.me/HusteRIXDimondSelf", style="danger", icon=6021418126061605425),
         ],
-        [btn("زیرمجموعه‌گیری", b"referral_system", "primary", icon=5258513401784573443)],
+        [btn("الماس رایگان", b"referral_system", "success", icon=5197350061012436657)],
     ]
     # «مدیریت» now lives inside «حساب کاربری» (admins only).
     return rows
@@ -15241,11 +15241,10 @@ async def callbacks(event):
         status = "روشن ✅" if new_state else "خاموش ❌"
         await safe_answer(event, f"ربات {status}")
         buttons = [
-            [btn("اضافه کردن الماس", b"add_balance", "success", icon=PREMIUM_EMOJI["diamond"][0]), btn("کاهش الماس", b"remove_balance", "danger", icon=PREMIUM_EMOJI["danger"][0])],
-            [btn("ساخت کد هدیه", b"gift_create", "success", icon=PREMIUM_EMOJI["gift"][0]), btn("کدهای جاری", b"gift_manage", "primary", icon=PREMIUM_EMOJI["gift"][0])],
-            [btn("Backups", b"backups", "primary", icon=PREMIUM_EMOJI["order"][0])],
-            [btn("رفع مسدودی", b"unban_user", "success", icon=PREMIUM_EMOJI["check"][0]), btn("جوین اجباری", b"force_join", "primary", icon=PREMIUM_EMOJI["megaphone"][0])],
-            [btn("مسدود کردن کاربر", b"ban_user", "danger", icon=PREMIUM_EMOJI["danger"][0]), btn("آمار کاربران", b"admin_stats", "primary", icon=PREMIUM_EMOJI["profile"][0])],
+            [btn("الماس", b"admin_gems", "success", icon=PREMIUM_EMOJI["diamond"][0])],
+            [btn("کد هدیه", b"admin_gift", "primary", icon=PREMIUM_EMOJI["gift"][0]), btn("آمار کاربران", b"admin_stats", "primary", icon=PREMIUM_EMOJI["profile"][0])],
+            [btn("جوین اجباری", b"force_join", "success", icon=PREMIUM_EMOJI["megaphone"][0])],
+            [btn("مسدودی", b"admin_block", "danger", icon=PREMIUM_EMOJI["danger"][0]), btn("Backups", b"backups", "primary", icon=PREMIUM_EMOJI["order"][0])],
             [btn("روشن کردن بات" if not new_state else "خاموش کردن بات", b"bot_toggle", "success" if not new_state else "danger", icon=PREMIUM_EMOJI["green"][0] if not new_state else PREMIUM_EMOJI["red"][0])],
             [btn("بازگشت", b"user_account", "danger", icon=PREMIUM_EMOJI["self_back"][0])],
         ]
@@ -16093,15 +16092,55 @@ async def callbacks(event):
             return
 
         buttons = [
-            [btn("اضافه کردن الماس", b"add_balance", "success", icon=PREMIUM_EMOJI["diamond"][0]), btn("کاهش الماس", b"remove_balance", "danger", icon=PREMIUM_EMOJI["danger"][0])],
-            [btn("ساخت کد هدیه", b"gift_create", "success", icon=PREMIUM_EMOJI["gift"][0]), btn("کدهای جاری", b"gift_manage", "primary", icon=PREMIUM_EMOJI["gift"][0])],
-            [btn("Backups", b"backups", "primary", icon=PREMIUM_EMOJI["order"][0])],
-            [btn("رفع مسدودی", b"unban_user", "success", icon=PREMIUM_EMOJI["check"][0]), btn("جوین اجباری", b"force_join", "primary", icon=PREMIUM_EMOJI["megaphone"][0])],
-            [btn("مسدود کردن کاربر", b"ban_user", "danger", icon=PREMIUM_EMOJI["danger"][0]), btn("آمار کاربران", b"admin_stats", "primary", icon=PREMIUM_EMOJI["profile"][0])],
+            [btn("الماس", b"admin_gems", "success", icon=PREMIUM_EMOJI["diamond"][0])],
+            [btn("کد هدیه", b"admin_gift", "primary", icon=PREMIUM_EMOJI["gift"][0]), btn("آمار کاربران", b"admin_stats", "primary", icon=PREMIUM_EMOJI["profile"][0])],
+            [btn("جوین اجباری", b"force_join", "success", icon=PREMIUM_EMOJI["megaphone"][0])],
+            [btn("مسدودی", b"admin_block", "danger", icon=PREMIUM_EMOJI["danger"][0]), btn("Backups", b"backups", "primary", icon=PREMIUM_EMOJI["order"][0])],
             [btn("روشن کردن بات" if not is_bot_enabled() else "خاموش کردن بات", b"bot_toggle", "success" if not is_bot_enabled() else "danger", icon=PREMIUM_EMOJI["green"][0] if not is_bot_enabled() else PREMIUM_EMOJI["red"][0])],
             [btn("بازگشت", b"user_account", "danger", icon=PREMIUM_EMOJI["self_back"][0])],
         ]
         await edit_or_send(event, "🛠 **مدیریت**\n\nیک گزینه را انتخاب کنید:", buttons)
+        return
+
+    if data == "admin_gems":
+        if user_id not in ADMINS:
+            return
+        pending.pop(user_id, None)
+        await edit_or_send(
+            event,
+            "💎 <b>مدیریت الماس</b>\n\nیک گزینه را انتخاب کنید:",
+            [
+                [
+                    btn("اضافه", b"add_balance", "success", icon=PREMIUM_EMOJI["diamond"][0]),
+                    btn("کاهش", b"remove_balance", "danger", icon=PREMIUM_EMOJI["danger"][0]),
+                ],
+                [btn("بازگشت", b"admin_panel", "danger", icon=PREMIUM_EMOJI["self_back"][0])],
+            ],
+        )
+        return
+
+    if data == "admin_gift":
+        if user_id not in ADMINS:
+            return
+        pending.pop(user_id, None)
+        await edit_or_send(event, _gift_admin_menu_text(), _gift_admin_menu_buttons())
+        return
+
+    if data == "admin_block":
+        if user_id not in ADMINS:
+            return
+        pending.pop(user_id, None)
+        await edit_or_send(
+            event,
+            "🚫 <b>مدیریت مسدودی</b>\n\nیک گزینه را انتخاب کنید:",
+            [
+                [
+                    btn("مسدود", b"ban_user", "danger", icon=PREMIUM_EMOJI["danger"][0]),
+                    btn("رفع مسدودی", b"unban_user", "success", icon=PREMIUM_EMOJI["check"][0]),
+                ],
+                [btn("بازگشت", b"admin_panel", "danger", icon=PREMIUM_EMOJI["self_back"][0])],
+            ],
+        )
         return
 
     if data == "gift_create":
@@ -16490,11 +16529,8 @@ async def show_buy_balance(event):
             btn("9", b"num_9", "primary"),
         ],
         [
-            btn("0", b"num_0", "primary"),
-            btn("00", b"num_00", "primary"),
-        ],
-        [
             btn("تأیید", b"confirm_amount", "success", icon=5260726538302660868),
+            btn("0", b"num_0", "primary"),
             btn("حذف", b"clear_amount", "danger", icon=5258130763148172425),
         ],
         [btn("بازگشت", b"back", "primary", icon=PREMIUM_EMOJI["self_back"][0])]
