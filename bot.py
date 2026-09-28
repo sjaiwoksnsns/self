@@ -1451,6 +1451,7 @@ SELF_DEFAULTS = {
     "action_voice":"off", "action_round":"off", "action_video":"off", "action_photo":"off",
     "action_document":"off", "action_sticker":"off", "always_online":"off",
     "premium_emoji_map":"{}",
+    "premium_channel":"on", "premium_channels":"[]",
 }
 # Text-format toggles shown on the «اکشن» screen:
 # (setting key, callback action, button label, open tag, close tag)
@@ -1788,6 +1789,25 @@ def self_premium_emoji_map(uid):
 
 def self_save_premium_emoji_map(uid, mapping):
     self_set(uid, "premium_emoji_map", json.dumps(mapping, ensure_ascii=False))
+
+
+PREMIUM_CHANNELS_MAX = 10
+
+
+def self_premium_channels(uid):
+    """Channels registered for premium-emoji publishing:
+    [{"id": -100…, "username": "name", "title": "…"}]"""
+    try:
+        raw = json.loads(self_get(uid, "premium_channels", "[]"))
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [c for c in raw if isinstance(c, dict) and c.get("username")]
+
+
+def self_save_premium_channels(uid, channels):
+    self_set(uid, "premium_channels", json.dumps(channels, ensure_ascii=False))
 
 # ------------------------------------------------------------------
 # Pending premium-emoji relay texts, keyed by a short token.
@@ -2551,8 +2571,9 @@ async def _panel_show_premium_emoji(event, uid):
 
     blocks = [
         f"{HTX_TAG} • 💎 ایموجی پریمیوم",
-        f"وضعیت : {'✓ on' if valid else '✗ off'}",
+        f"وضعیت : {_onoff(self_get(uid, 'premium_channel'))}",
         f"تعداد ثبت‌شده : <b>{len(valid)}</b>",
+        f"کانال ثبت‌شده : <b>{len(self_premium_channels(uid))}</b>",
         "",
         "<b>ثبت:</b>",
         "<code>.ثبت ایموجی [پریمیوم] [عادی]</code>",
@@ -2573,23 +2594,18 @@ async def _panel_show_premium_emoji(event, uid):
     if len(valid) > 5:
         blocks.append(f"… و {len(valid) - 5} مورد دیگر")
 
-    rows = []
-    if valid:
-        rows.append([
-            btn(
-                "🗑 پاکسازی لیست ایموجی",
-                _self_cb(uid, "premium_clear_panel"),
-                "danger",
-            )
-        ])
-    rows.append([
-        btn(
+    status = self_get(uid, "premium_channel")
+    rows = [
+        [btn(f"وضعیت : {_onoff(status)}", _self_cb(uid, "pec_toggle"),
+             "success" if status == "on" else "danger")],
+        [btn("استفاده در کانال", _self_cb(uid, "pec_open"), "primary")],
+        [btn(
             "بازگشت",
             _self_cb(uid, f"pg:{page_idx}"),
             "danger",
             icon=PREMIUM_EMOJI["self_back"][0],
-        )
-    ])
+        )],
+    ]
 
     await safe_callback_edit(
         event,
@@ -2597,6 +2613,48 @@ async def _panel_show_premium_emoji(event, uid):
         parse_mode="html",
         buttons=rows,
     )
+
+
+async def _panel_show_premium_channels(event, uid):
+    """«استفاده در کانال» screen: usage + one button per registered channel."""
+    uid = int(uid)
+    channels = self_premium_channels(uid)
+    blocks = [
+        f"{HTX_TAG} • استفاده در کانال",
+        "استفاده در کانال : <code>.انتشار در چنل @channel</code>",
+        "ثبت کانال : <code>.ثبت کانال @channel</code>",
+    ]
+    rows = [
+        [btn(f"@{c['username']}", _self_cb(uid, f"pec_ch:{i}"), "primary")]
+        for i, c in enumerate(channels)
+    ]
+    if channels:
+        rows.append([btn("پاکسازی کانال", _self_cb(uid, "pec_clear"), "danger")])
+    rows.append([btn("بازگشت", _self_cb(uid, "premium_emoji_open"), "danger",
+                     icon=PREMIUM_EMOJI["self_back"][0])])
+    await safe_callback_edit(event, _htx_stack(*blocks), parse_mode="html", buttons=rows)
+
+
+async def _panel_show_premium_channel_info(event, uid, idx):
+    """«کانال ثبت شده» screen: name / username / id + delete."""
+    uid = int(uid)
+    channels = self_premium_channels(uid)
+    if not (0 <= idx < len(channels)):
+        await _panel_show_premium_channels(event, uid)
+        return
+    c = channels[idx]
+    blocks = [
+        f"{HTX_TAG} • کانال ثبت شده",
+        f"نام: {html.escape(str(c.get('title') or '-'))}",
+        f"یوزرنیم: @{html.escape(str(c['username']))}",
+        f"آیدی: <code>{html.escape(str(c.get('id', '-')))}</code>",
+    ]
+    rows = [
+        [btn("🗑 حذف کانال", _self_cb(uid, f"pec_del:{idx}"), "danger")],
+        [btn("بازگشت", _self_cb(uid, "pec_open"), "danger",
+             icon=PREMIUM_EMOJI["self_back"][0])],
+    ]
+    await safe_callback_edit(event, _htx_stack(*blocks), parse_mode="html", buttons=rows)
 
 
 async def _panel_show_item(event, uid, key, extra_text=None):
@@ -6167,9 +6225,33 @@ async def handle_self_panel_callback(event):
         await _panel_show_premium_emoji(event, uid)
         return True
 
-    if action == "premium_clear_panel":
-        self_save_premium_emoji_map(uid, {})
+    if action == "pec_toggle":
+        current = self_get(uid, "premium_channel")
+        self_set(uid, "premium_channel", "off" if current == "on" else "on")
         await _panel_show_premium_emoji(event, uid)
+        return True
+
+    if action == "pec_open":
+        await _panel_show_premium_channels(event, uid)
+        return True
+
+    if action.startswith("pec_ch:"):
+        tail = action.split(":", 1)[1]
+        await _panel_show_premium_channel_info(event, uid, int(tail) if tail.isdigit() else -1)
+        return True
+
+    if action.startswith("pec_del:"):
+        tail = action.split(":", 1)[1]
+        channels = self_premium_channels(uid)
+        if tail.isdigit() and 0 <= int(tail) < len(channels):
+            channels.pop(int(tail))
+            self_save_premium_channels(uid, channels)
+        await _panel_show_premium_channels(event, uid)
+        return True
+
+    if action == "pec_clear":
+        self_save_premium_channels(uid, [])
+        await _panel_show_premium_channels(event, uid)
         return True
 
     if action == "cs_open":
@@ -10575,6 +10657,221 @@ async def _handle_premium_emoji_command(event, uid, text):
     return True
 
 
+# ============================================================
+# PREMIUM-EMOJI CHANNEL PUBLISHING
+#   .ثبت کانال @channel            -> SELF adds the main bot to the channel as
+#                                     admin (post messages) and registers it
+#   .انتشار در چنل @channel [متن]  -> the BOT posts the text (reply to a
+#                                     message, or text after the username) in
+#                                     that channel, with premium emojis
+# ============================================================
+_PEC_USERNAME = r"@?([A-Za-z][A-Za-z0-9_]{3,31})"
+_PEC_REGISTER_RE = re.compile(r"^ثبت\s*(?:کانال|چنل)\s+" + _PEC_USERNAME + r"\s*$")
+_PEC_PUBLISH_RE = re.compile(
+    r"^انتشار\s+(?:در|به)\s+(?:چنل|کانال)\s+" + _PEC_USERNAME + r"(?:\s+(.+))?$", re.DOTALL
+)
+_PEC_USAGE_RE = re.compile(r"^انتشار\s+(?:در|به)\s+(?:چنل|کانال)\s*$")
+
+
+def _pec_build_entities(text, entities, mapping):
+    """Keep the source message's entities and add a custom-emoji entity for
+    every registered normal emoji found in the text (UTF-16 offsets)."""
+    wide = utils.add_surrogate(text or "")
+    result = list(entities or [])
+    taken = [
+        (e.offset, e.offset + e.length)
+        for e in result
+        if isinstance(e, types.MessageEntityCustomEmoji)
+    ]
+    for key in sorted(mapping.keys(), key=len, reverse=True):
+        entry = mapping.get(key)
+        if not key or not isinstance(entry, (list, tuple)) or len(entry) < 2:
+            continue
+        try:
+            emoji_id = int(entry[0])
+        except (TypeError, ValueError):
+            continue
+        wkey = utils.add_surrogate(key)
+        start = 0
+        while True:
+            i = wide.find(wkey, start)
+            if i < 0:
+                break
+            j = i + len(wkey)
+            if not any(i < b and a < j for a, b in taken):
+                result.append(types.MessageEntityCustomEmoji(
+                    offset=i, length=len(wkey), document_id=emoji_id,
+                ))
+                taken.append((i, j))
+            start = j
+    result.sort(key=lambda e: e.offset)
+    return result
+
+
+async def _pec_register(event, uid, username):
+    client = event.client
+    try:
+        entity = await client.get_entity(username)
+    except Exception:
+        await event.edit(f"❌ کانال @{html.escape(username)} پیدا نشد.", parse_mode="html")
+        return
+    if not isinstance(entity, types.Channel) or not getattr(entity, "broadcast", False):
+        await event.edit("❌ فقط کانال (Channel) عمومی قابل ثبت است.", parse_mode="html")
+        return
+    if not getattr(entity, "username", None):
+        await event.edit("❌ کانال باید یوزرنیم عمومی داشته باشد.", parse_mode="html")
+        return
+
+    channels = self_premium_channels(uid)
+    known = next((c for c in channels if c["username"].lower() == entity.username.lower()), None)
+    if known is None and len(channels) >= PREMIUM_CHANNELS_MAX:
+        await event.edit(f"❌ حداکثر {PREMIUM_CHANNELS_MAX} کانال قابل ثبت است.", parse_mode="html")
+        return
+
+    # SELF (the session on this account) makes the main bot an admin so the
+    # bot itself can post into the channel.
+    try:
+        bot_entity = await _get_inline_bot_entity(client)
+        await client.edit_admin(
+            entity, bot_entity, is_admin=True,
+            post_messages=True, edit_messages=True, title="HTX",
+        )
+    except Exception as exc:
+        print(f"[PEC {uid}] add bot as admin failed: {type(exc).__name__}: {exc!r}")
+        await event.edit(
+            "❌ ربات داخل کانال ادمین نشد.\n"
+            "مطمئن شو اکانتت مالک یا ادمین کانال است و اجازه «افزودن ادمین» دارد.\n"
+            f"<code>{html.escape(type(exc).__name__)}</code>",
+            parse_mode="html",
+        )
+        return
+
+    try:
+        await bot.get_entity(entity.username)
+    except Exception as exc:
+        print(f"[PEC {uid}] bot cannot resolve channel: {type(exc).__name__}: {exc!r}")
+        await event.edit(
+            "❌ ربات ادمین شد ولی به کانال دسترسی پیدا نکرد. کمی بعد دوباره امتحان کن.",
+            parse_mode="html",
+        )
+        return
+
+    record = {
+        "id": utils.get_peer_id(entity),
+        "username": entity.username,
+        "title": getattr(entity, "title", "") or "",
+    }
+    if known is not None:
+        channels[channels.index(known)] = record
+    else:
+        channels.append(record)
+    self_save_premium_channels(uid, channels)
+    await event.edit(
+        f"✅ کانال @{html.escape(entity.username)} برای ایموجی پریمیوم ثبت شد ✓ | HTX",
+        parse_mode="html",
+    )
+
+
+async def _pec_publish(event, uid, username, inline_text):
+    if self_get(uid, "premium_channel") != "on":
+        await event.edit(
+            "❌ انتشار در کانال خاموش است. از پنل > ایموجی پریمیوم روشنش کن.",
+            parse_mode="html",
+        )
+        return
+    entry = next(
+        (c for c in self_premium_channels(uid) if c["username"].lower() == username.lower()),
+        None,
+    )
+    if entry is None:
+        await event.edit(
+            f"❌ کانال @{html.escape(username)} ثبت نشده.\n"
+            f"اول بزن: <code>.ثبت کانال @{html.escape(username)}</code>",
+            parse_mode="html",
+        )
+        return
+
+    text, entities = "", []
+    if event.is_reply:
+        replied = await event.get_reply_message()
+        if replied and (replied.raw_text or "").strip():
+            text = replied.raw_text
+            entities = list(replied.entities or [])
+    if not text.strip() and inline_text:
+        text = inline_text.strip()
+    if not text.strip():
+        await event.edit(
+            "❌ متنی برای انتشار نیست. روی یک پیام ریپلای کن یا بعد از یوزرنیم متن بنویس.",
+            parse_mode="html",
+        )
+        return
+
+    with_premium = _pec_build_entities(text, entities, self_premium_emoji_map(uid))
+    try:
+        target = await bot.get_entity(entry["username"])
+    except Exception as exc:
+        print(f"[PEC {uid}] resolve failed: {type(exc).__name__}: {exc!r}")
+        await event.edit("❌ ربات به کانال دسترسی ندارد؛ دوباره «ثبت کانال» را بزن.", parse_mode="html")
+        return
+
+    plain = False
+    try:
+        await bot.send_message(
+            target, text, formatting_entities=with_premium or None,
+            parse_mode=None, link_preview=False,
+        )
+    except Exception as exc:
+        print(f"[PEC {uid}] send with premium emoji failed: {type(exc).__name__}: {exc!r}")
+        plain_entities = [e for e in with_premium if not isinstance(e, types.MessageEntityCustomEmoji)]
+        try:
+            await bot.send_message(
+                target, text, formatting_entities=plain_entities or None,
+                parse_mode=None, link_preview=False,
+            )
+            plain = True
+        except Exception as exc2:
+            print(f"[PEC {uid}] plain send failed: {type(exc2).__name__}: {exc2!r}")
+            await event.edit(
+                "❌ انتشار انجام نشد. مطمئن شو ربات هنوز ادمین کانال است.\n"
+                f"<code>{html.escape(type(exc2).__name__)}</code>",
+                parse_mode="html",
+            )
+            return
+
+    note = "\n⚠️ تلگرام ایموجی پریمیوم را نپذیرفت؛ متن با ایموجی عادی رفت." if plain else ""
+    await event.edit(f"✅ در @{html.escape(entry['username'])} منتشر شد.{note}", parse_mode="html")
+
+
+async def _handle_premium_channel_command(event, uid, text):
+    norm = _strip_invisible_marks(text).strip()
+    m_reg = _PEC_REGISTER_RE.match(norm)
+    m_pub = None if m_reg else _PEC_PUBLISH_RE.match(norm)
+    m_usage = None if (m_reg or m_pub) else _PEC_USAGE_RE.match(norm)
+    if not (m_reg or m_pub or m_usage):
+        return False
+
+    if not (event.is_private and event.chat_id == uid):
+        await event.edit("❌ این دستور فقط داخل Saved Messages خودت کار می‌کند.", parse_mode="html")
+        return True
+    if m_usage:
+        await event.edit(
+            "❌ فرمت درست:\n<code>.انتشار در چنل @channel</code>\n"
+            "روی پیام ریپلای کن یا بعد از یوزرنیم متن بنویس.",
+            parse_mode="html",
+        )
+        return True
+    try:
+        if m_reg:
+            await _pec_register(event, uid, m_reg.group(1))
+        else:
+            await _pec_publish(event, uid, m_pub.group(1), m_pub.group(2))
+    except Exception as exc:
+        print(f"[PEC {uid}] command failed: {type(exc).__name__}: {exc!r}")
+        with contextlib.suppress(Exception):
+            await event.edit(f"❌ خطا: <code>{html.escape(type(exc).__name__)}</code>", parse_mode="html")
+    return True
+
+
 _SNOOPERS_COMMAND_RE = re.compile(r"^\s*لیست\s*فضول\s*ها$")
 
 
@@ -10974,6 +11271,8 @@ async def _self_run_commands(event, uid, orig, text, low):
     if await _handle_secretary_command(event, uid, text):
         return True
     if await _handle_group_command(event, uid, text):
+        return True
+    if await _handle_premium_channel_command(event, uid, text):
         return True
     if await _handle_premium_emoji_command(event, uid, text):
         return True
