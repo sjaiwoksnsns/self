@@ -835,7 +835,7 @@ stt_state = {}
 # deletion snapshot so a user-cleared chat can be archived without scanning
 # the whole conversation.
 HTX_DELETE_SNAPSHOT_SIZE = 15      # max messages archived per deletion (wherever in the chat they were)
-HTX_SNAPSHOT_CACHE_SIZE = 250      # incoming messages remembered per chat, so a message deleted far up the chat can still be recovered
+HTX_SNAPSHOT_CACHE_SIZE = 50       # incoming messages remembered per chat, so a message deleted far up the chat can still be recovered
 _deleted_message_cache = {}
 # MessageDeleted updates for private chats do not reliably carry the peer/chat id.
 # Keep a tiny message-id -> chat index so an immediately deleted message can
