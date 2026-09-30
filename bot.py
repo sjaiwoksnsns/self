@@ -161,6 +161,11 @@ PREMIUM_EMOJI = {
     "rps_user": (5316887736823591263, "👤"),
     "rps_clock": (5953759695226278894, "⏰"),
 
+    # Mozy section: custom emoji used INSIDE message text only (never as a
+    # button icon — buttons keep the plain 🍌 emoji).
+    "mozy_clock": (5953759695226278894, "⏰"),
+    "mozy_banana": (5199807018528946190, "🍌"),
+
     "numbers": {
         "0": (5771423202341303860, "0️⃣"),
         "1": (5771785311034021057, "1️⃣"),
@@ -2496,21 +2501,23 @@ PANEL_COMMAND_SCREENS = {
         "دستورات • داخل گروه",
         "<code>.درآمد میمون روشن</code>",
         "<code>.درآمد میمون خاموش</code>",
-        "⏱ هر ۱۲ ساعت و ۵ ثانیه یک‌بار\n"
-        "🐒 «میمون» داخل همان گپ ارسال می‌شود\n"
-        "💰 روی جواب ربات، دکمه «برداشت همه» زده می‌شود\n"
-        "🔁 اگر ربات جواب ندهد، ۱۵ دقیقه بعد دوباره تلاش می‌کند\n"
-        "✅ ۱۲ ساعت بعدی از لحظه برداشت موفق حساب می‌شود",
+        ("plain",
+         f"{premium_emoji('mozy_clock')} هر ۱۲ ساعت و ۵ ثانیه یک‌بار\n"
+         "🐒 «میمون» داخل همان گپ ارسال می‌شود\n"
+         "💰 روی جواب ربات، دکمه «برداشت همه» زده می‌شود\n"
+         "🔁 اگر ربات جواب ندهد، ۱۵ دقیقه بعد دوباره تلاش می‌کند\n"
+         "✅ ۱۲ ساعت بعدی از لحظه برداشت موفق حساب می‌شود"),
     ]),
     "mozy_bank": ("سود بانک", [
         "دستورات • داخل گروه",
         "<code>.سود بانک روشن</code>",
         "<code>.سود بانک خاموش</code>",
-        "⏱ هر ۲۴ ساعت و ۵ ثانیه یک‌بار\n"
-        "🏦 «بانک» داخل همان گپ ارسال می‌شود\n"
-        "🍌 دکمه «سود» و بعد دکمه «برداشت» زده می‌شود\n"
-        "🔁 اگر ربات جواب ندهد، ۱۵ دقیقه بعد دوباره تلاش می‌کند\n"
-        "✅ ۲۴ ساعت بعدی از لحظه برداشت موفق حساب می‌شود",
+        ("plain",
+         f"{premium_emoji('mozy_clock')} هر ۲۴ ساعت و ۵ ثانیه یک‌بار\n"
+         "🏦 «بانک» داخل همان گپ ارسال می‌شود\n"
+         f"{premium_emoji('mozy_banana')} دکمه «سود» و بعد دکمه «برداشت» زده می‌شود\n"
+         "🔁 اگر ربات جواب ندهد، ۱۵ دقیقه بعد دوباره تلاش می‌کند\n"
+         "✅ ۲۴ ساعت بعدی از لحظه برداشت موفق حساب می‌شود"),
     ]),
     "mozy_spin": ("اسپین خودکار", [
         "دستورات • داخل گروه",
@@ -2543,10 +2550,24 @@ PANEL_COMMAND_SCREENS = {
 
 
 def _panel_command_screen(uid, key):
+    """Quote-block screen. A block given as ("plain", text) is NOT wrapped in a
+    blockquote: custom emoji at the start of an RTL line inside a quote get
+    drawn on top of the following text by the Telegram client, so the
+    emoji-bearing explanation lines are sent as normal text instead."""
     title, blocks = PANEL_COMMAND_SCREENS[key]
     page_idx = _panel_key_page(key)
-    text = _htx_stack(f"{HTX_TAG} • {title}", *blocks)
-    buttons = [[btn("بازگشت", _self_cb(uid, f"pg:{page_idx}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
+    parts = [_htx_quote(f"{HTX_TAG} • {title}")]
+    for block in blocks:
+        if isinstance(block, tuple):
+            parts.append(block[1])
+        elif block:
+            parts.append(_htx_quote(block))
+    text = "\n\n".join(parts)
+    # «بازگشت» goes ONE step back: sub-features of a group (موزی / میویی)
+    # return to their group menu, everything else to its grid page.
+    parent_key = _panel_parent_key(key)
+    back_data = _self_cb(uid, f"pgrp:{parent_key}") if parent_key else _self_cb(uid, f"pg:{page_idx}")
+    buttons = [[btn("بازگشت", back_data, "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
     return text, buttons
 
 
@@ -2661,18 +2682,43 @@ async def _panel_show_premium_emoji(event, uid):
     )
 
 
+# Fixed button layouts for groups that don't use the default 2-1-2-1 rhythm.
+# Keyboard order is left-to-right, so the FIRST item of a row listed in the
+# request ends up on the right (RTL reading order) — rows below are written
+# in keyboard order.
+#   موزی:   موز خودکار | اسپین خودکار
+#           میمون | سود بانک
+#           وضعیت موزی
+PANEL_GROUP_LAYOUTS = {
+    "mozy_group": [
+        ["mozy_spin", "mozy_banana"],
+        ["mozy_bank", "mozy_monkey"],
+        ["mozy_status"],
+    ],
+}
+# Group titles shown in the message TEXT (buttons keep their plain emoji).
+PANEL_GROUP_TITLE_HTML = {
+    "mozy_group": f"{premium_emoji('mozy_banana')} موزی",
+}
+
+
 async def _panel_show_group(event, uid, key):
     title, feature_keys = PANEL_GROUPS[key]
     page_idx = _panel_key_page(key)
-    rows = []
-    for size in _panel_chunk_pattern(len(feature_keys)):
-        start = sum(len(row) for row in rows)
-        rows.append([
-            btn(PANEL_LABELS[item_key], _self_cb(uid, f"pit:{page_idx}:{item_key}"), "primary")
-            for item_key in feature_keys[start:start + size]
-        ])
+    layout = PANEL_GROUP_LAYOUTS.get(key)
+    if layout is None:
+        layout, pos = [], 0
+        for size in _panel_chunk_pattern(len(feature_keys)):
+            layout.append(feature_keys[pos:pos + size])
+            pos += size
+    rows = [
+        [btn(PANEL_LABELS[item_key], _self_cb(uid, f"pit:{page_idx}:{item_key}"), "primary")
+         for item_key in row]
+        for row in layout
+    ]
     rows.append([btn("بازگشت", _self_cb(uid, f"pg:{page_idx}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])])
-    await safe_callback_edit(event, f"<b>{html.escape(title)}</b>\n\nقابلیت موردنظر را انتخاب کن:", parse_mode="html", buttons=rows)
+    title_html = PANEL_GROUP_TITLE_HTML.get(key) or html.escape(title)
+    await safe_callback_edit(event, f"<b>{title_html}</b>\n\nقابلیت موردنظر را انتخاب کن:", parse_mode="html", buttons=rows)
 
 
 async def _panel_show_item(event, uid, key, extra_text=None):
@@ -13057,7 +13103,7 @@ MOZY_COMMANDS = {
     "bank": "بانک",
 }
 MOZY_DISPLAY = {
-    "banana": "🍌 موز خودکار",
+    "banana": f"{premium_emoji('mozy_banana')} موز خودکار",
     "spin": "🎰 اسپین خودکار",
     "monkey": "🐒 درآمد میمون",
     "bank": "🏦 سود بانک",
@@ -13199,7 +13245,7 @@ def _mozy_interval_text(seconds: int) -> str:
 def _mozy_status_text(uid: int, chat_id: int | None = None):
     if chat_id is not None:
         cfg, _ = _mozy_chat_config(uid, chat_id, create=False)
-        title = "🍌 <b>وضعیت موزی</b>"
+        title = f"{premium_emoji('mozy_banana')} <b>وضعیت موزی</b>"
         if not cfg:
             cfg = {feature: _mozy_default_feature(feature) for feature in MOZY_FEATURES}
         lines = [title, "", f"🆔 گپ: <code>{int(chat_id)}</code>"]
@@ -13208,13 +13254,13 @@ def _mozy_status_text(uid: int, chat_id: int | None = None):
             status = "✅ روشن" if item.get("enabled") else "❌ خاموش"
             interval = int(item.get("interval", 0) or 0)
             lines.append(f"{MOZY_DISPLAY[feature]}: {status}")
-            lines.append(f"⏱ زمان: {_mozy_interval_text(interval)}" if interval else "⏱ زمان: تنظیم نشده")
+            lines.append(f"{premium_emoji('mozy_clock')} زمان: {_mozy_interval_text(interval)}" if interval else f"{premium_emoji('mozy_clock')} زمان: تنظیم نشده")
         return "\n".join(lines)
 
     configs = _mozy_configs(uid)
     if not configs:
-        return "🍌 <b>وضعیت موزی</b>\n\nهنوز هیچ گروهی برای موزی تنظیم نشده است."
-    lines = ["🍌 <b>وضعیت موزی</b>", ""]
+        return f"{premium_emoji('mozy_banana')} <b>وضعیت موزی</b>\n\nهنوز هیچ گروهی برای موزی تنظیم نشده است."
+    lines = [f"{premium_emoji('mozy_banana')} <b>وضعیت موزی</b>", ""]
     for raw_chat, cfg in configs.items():
         try:
             chat_id_value = int(raw_chat)
@@ -13225,7 +13271,7 @@ def _mozy_status_text(uid: int, chat_id: int | None = None):
             item = cfg.get(feature, _mozy_default_feature(feature))
             status = "✅ روشن" if item.get("enabled") else "❌ خاموش"
             interval = int(item.get("interval", 0) or 0)
-            lines.append(f"{MOZY_DISPLAY[feature]}: {status} • ⏱ {_mozy_interval_text(interval)}" if interval else f"{MOZY_DISPLAY[feature]}: {status} • ⏱ تنظیم نشده")
+            lines.append(f"{MOZY_DISPLAY[feature]}: {status} • {premium_emoji('mozy_clock')} {_mozy_interval_text(interval)}" if interval else f"{MOZY_DISPLAY[feature]}: {status} • {premium_emoji('mozy_clock')} تنظیم نشده")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -13616,7 +13662,7 @@ async def _handle_mozy_command(event, uid: int, text: str):
         status = "روشن ✅" if enabled else "خاموش ❌"
         interval = int(item.get("interval", MOZY_DEFAULT_INTERVALS.get(feature, 0)) or 0)
         interval_text = _mozy_interval_text(interval)
-        await event.edit(premium_ui_text(f"{label}: {status}\n⏱ زمان اجرا: {interval_text}"), parse_mode="html")
+        await event.edit(premium_ui_text(f"{label}: {status}\n{premium_emoji('mozy_clock')} زمان اجرا: {interval_text}"), parse_mode="html")
         return True
 
     return False
