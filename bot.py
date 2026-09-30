@@ -834,12 +834,20 @@ stt_state = {}
 # Last N incoming private messages per chat. Used only as a short-lived
 # deletion snapshot so a user-cleared chat can be archived without scanning
 # the whole conversation.
-HTX_DELETE_SNAPSHOT_SIZE = 15
+HTX_DELETE_SNAPSHOT_SIZE = 15      # max messages archived per deletion (wherever in the chat they were)
+HTX_SNAPSHOT_CACHE_SIZE = 250      # incoming messages remembered per chat, so a message deleted far up the chat can still be recovered
 _deleted_message_cache = {}
 # MessageDeleted updates for private chats do not reliably carry the peer/chat id.
 # Keep a tiny message-id -> chat index so an immediately deleted message can
 # still be mapped back to the correct private conversation.
 _deleted_message_index = {}
+# Chats whose cache was already back-filled from the real server history, so
+# messages received long before (or before a restart of) the bot are covered.
+_snapshot_seeded = set()
+_snapshot_seed_tasks = set()
+# Ids already archived to Saved Messages (never archive the same message twice).
+_snapshot_archived = set()
+HTX_SNAPSHOT_SEED_DIALOGS = 40
 # «اسنپ شات گپ»: only REPLY messages sent inside a group are kept, just long
 # enough to recover their text/sender/chat if the reply itself gets deleted.
 # Keyed by (uid, message_id) only — the cached message already carries its
@@ -1549,6 +1557,24 @@ def self_banners(uid):
 def self_save_banners(uid, banners):
     self_set(uid, "banners", json.dumps(banners, ensure_ascii=False))
 
+def _banner_is_claim_word(banner):
+    """True when the banner's text is exactly «دریافت الماس»."""
+    text = " ".join(str((banner or {}).get("text") or "").split()).casefold()
+    return text == "دریافت الماس"
+
+
+def _banner_target_is_official_group(target):
+    """True when a resolved target (entity or id) is the official main group."""
+    if OFFICIAL_GROUP_ID is None:
+        return False
+    try:
+        if isinstance(target, int):
+            return int(target) == int(OFFICIAL_GROUP_ID)
+        return int(utils.get_peer_id(target, add_mark=True)) == int(OFFICIAL_GROUP_ID)
+    except Exception:
+        return False
+
+
 def _next_banner_id(banners):
     return max([int(b.get("id", 0)) for b in banners] or [0]) + 1
 
@@ -1659,7 +1685,12 @@ async def _banner_dispatch_now(client, uid, banner, targets):
     if not client:
         raise RuntimeError("SELF client is not active")
     sent = failed = 0
+    claim_word = _banner_is_claim_word(banner)
     for target in targets:
+        # A banner whose text is «دریافت الماس» is never posted in the main
+        # group (only there — every other chat still receives it).
+        if claim_word and _banner_target_is_official_group(target):
+            continue
         try:
             await _banner_send(client, uid, banner, target)
             sent += 1
@@ -2164,17 +2195,17 @@ def _panel_page_buttons(uid, page_idx, pages):
             btn("اسم", _self_cb(uid, "hx_name"), "primary"),
         ])
 
-    # Page 2 only: ساخت ویدیو گرد / دوست و دشمن, right above the page
-    # navigation row (keyboard order is left-to-right, so دوست و دشمن ends
-    # up on the right).
+    # Page 2 only: keeps the 2-1-2-1-2 rhythm — after the three item rows
+    # (2,1,2) comes «متن به ویس» alone (1), then ساخت ویدیو گرد / دوست و
+    # دشمن (2) right above the page navigation row (keyboard order is
+    # left-to-right, so دوست و دشمن ends up on the right).
     if page_idx == PANEL_FE_PAGE:
+        rows.append([
+            btn("متن به ویس", _self_cb(uid, "tts_info"), "primary"),
+        ])
         rows.append([
             btn("ساخت ویدیو گرد", _self_cb(uid, "vn_open"), "primary"),
             btn("دوست و دشمن", _self_cb(uid, "fe_menu"), "primary"),
-        ])
-        # «متن به ویس» alone, right under ساخت ویدیو گرد / دوست و دشمن.
-        rows.append([
-            btn("متن به ویس", _self_cb(uid, "tts_info"), "primary"),
         ])
 
     # Page 3 only: انتقال / اسکرین 📸 / موجودی, right above the page
@@ -3434,8 +3465,11 @@ _DL_ERRORS = {
 }
 
 
-def _htx_dl_screen(uid, title, example, hint, note):
-    """(text, buttons) of a downloader button on page 4 of the panel."""
+def _htx_dl_screen(uid, title, example, hint, note, back_page=None):
+    """(text, buttons) of a downloader button. «بازگشت» returns to the panel
+    page the button actually sits on (back_page), page 4 by default."""
+    if back_page is None:
+        back_page = PANEL_CALC_PAGE
     text = _htx_stack(
         f"{HTX_TAG} • {title}",
         "دستورات",
@@ -3443,7 +3477,7 @@ def _htx_dl_screen(uid, title, example, hint, note):
         hint,
         note,
     )
-    buttons = [[btn("بازگشت", _self_cb(uid, f"pg:{PANEL_CALC_PAGE}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
+    buttons = [[btn("بازگشت", _self_cb(uid, f"pg:{back_page}"), "danger", icon=PREMIUM_EMOJI["self_back"][0])]]
     return text, buttons
 
 
@@ -3470,26 +3504,27 @@ def _htx_ig_dl_screen(uid):
     )
 
 
-def _htx_extra_dl_screen(uid, title, command, example, hint):
-    # These buttons are direct children of page 6, so their single back step
-    # is page 6, not the panel home screen.
+def _htx_extra_dl_screen(uid, title, command, example, hint, item_key=None):
+    # The back step is resolved from PANEL_ITEMS, so it always returns to the
+    # exact page the button was opened from (no hard-coded page number).
+    back_page = _panel_key_page(item_key) if item_key else None
     return _htx_dl_screen(uid, title, f"{command} {example}", hint,
-                          "فایل همین‌جا برایت ارسال می‌شود")
+                          "فایل همین‌جا برایت ارسال می‌شود", back_page=back_page)
 
 
 def _htx_ph_dl_screen(uid):
     return _htx_extra_dl_screen(uid, "دانلودر PH", ".ph", "https://pornhub.com/view_video.php?viewkey=…",
-                                "لینک Pornhub را بعد از دستور بنویس")
+                                "لینک Pornhub را بعد از دستور بنویس", item_key="ph_dl")
 
 
 def _htx_xvid_dl_screen(uid):
     return _htx_extra_dl_screen(uid, "دانلودر Xvid", ".xvid", "https://xvideos.com/video/…",
-                                 "لینک Xvid را بعد از دستور بنویس")
+                                 "لینک Xvid را بعد از دستور بنویس", item_key="xvid_dl")
 
 
 def _htx_xnxx_dl_screen(uid):
     return _htx_extra_dl_screen(uid, "دانلودر XNXX", ".xnxx", "https://xnxx.com/video/…",
-                                "لینک XNXX را بعد از دستور بنویس")
+                                "لینک XNXX را بعد از دستور بنویس", item_key="xnxx_dl")
 
 
 def _htx_snap_screen(uid):
@@ -5008,7 +5043,7 @@ async def _get_inline_bot_entity(client):
 # since it's the one that inserted it).
 _LAST_PANEL_MSG = {}
 
-HTX_PANEL_CLOSE_DELETE_DELAY = 3  # seconds after «بستن» before the card is removed entirely
+HTX_PANEL_CLOSE_DELETE_DELAY = 0  # «بستن» removes the card immediately (no delay)
 
 
 async def _delete_closed_panel(uid, peer, message_id, delay=HTX_PANEL_CLOSE_DELETE_DELAY):
@@ -5016,12 +5051,16 @@ async def _delete_closed_panel(uid, peer, message_id, delay=HTX_PANEL_CLOSE_DELE
     (not just strip its buttons). Must go through the SELF client — it's
     the account that actually inserted the inline-result message, so it's
     the only one allowed to delete it; the bot itself can't."""
-    await asyncio.sleep(delay)
+    if delay and delay > 0:
+        await asyncio.sleep(delay)
     client = self_clients.get(int(uid))
     if not client:
-        return
-    with contextlib.suppress(Exception):
+        return False
+    try:
         await client.delete_messages(peer, [message_id])
+        return True
+    except Exception:
+        return False
 
 
 async def _htx_panel_placeholder_edit(event):
@@ -6439,14 +6478,24 @@ async def handle_self_panel_callback(event):
     if action == "close":
         _first_comment_channel_sessions.pop(int(uid), None)
         last_panel = _LAST_PANEL_MSG.pop(int(uid), None)
-        await safe_answer(event, "پنل با موفقیت بسته شد.")
-        # Strip the buttons right away (instant feedback)...
-        with contextlib.suppress(Exception):
-            await safe_callback_edit(event, self_panel_text(uid), parse_mode="html", buttons=None)
-        # ...then remove the whole card a few seconds later.
+        # No delay and no intermediate edit: the popup answer and the real
+        # deletion run at the same time, so the card disappears instantly.
+        deleted = False
         if last_panel:
             peer, message_id = last_panel
-            asyncio.create_task(_delete_closed_panel(uid, peer, message_id))
+            results = await asyncio.gather(
+                safe_answer(event, "پنل با موفقیت بسته شد."),
+                _delete_closed_panel(uid, peer, message_id, delay=0),
+                return_exceptions=True,
+            )
+            deleted = results[1] is True
+        else:
+            with contextlib.suppress(Exception):
+                await safe_answer(event, "پنل با موفقیت بسته شد.")
+        if not deleted:
+            # Fallback only: the card could not be deleted, so at least strip its buttons.
+            with contextlib.suppress(Exception):
+                await safe_callback_edit(event, self_panel_text(uid), parse_mode="html", buttons=None)
         return True
     if action == "comment_setup":
         try:
@@ -11613,6 +11662,15 @@ async def _self_run_commands(event, uid, orig, text, low):
         if not replied:
             await event.edit(premium_ui_text("❌ پیام بنر پیدا نشد."), parse_mode="html")
             return True
+        # In the main group only: «دریافت الماس» can't be registered as a banner.
+        await resolve_official_group_id()
+        if (
+            OFFICIAL_GROUP_ID is not None
+            and int(event.chat_id) == int(OFFICIAL_GROUP_ID)
+            and _banner_is_claim_word({"text": replied.raw_text})
+        ):
+            await event.edit(premium_ui_text("❌ کلمه «دریافت الماس» داخل گپ اصلی به‌عنوان بنر ثبت نمی‌شود."), parse_mode="html")
+            return True
         banners = self_banners(uid)
         banner_id = _next_banner_id(banners)
         mode = "forward" if low.endswith("فور") else "copy"
@@ -11840,6 +11898,13 @@ async def _self_run_commands(event, uid, orig, text, low):
             if key == "time_name":
                 # on -> write the clock now, off -> remove it from the name.
                 await apply_clock_toggle(uid, "name")
+            if key == "snap_private" and val == "on":
+                # Re-read the real history: messages may have arrived while it was off.
+                for _k in [k for k in _snapshot_seeded if k[0] == int(uid)]:
+                    _snapshot_seeded.discard(_k)
+                _snap_client = self_clients.get(int(uid))
+                if _snap_client:
+                    _start_snapshot_seed(_snap_client, uid)
 
         with contextlib.suppress(Exception):
             await event.edit(premium_ui_text(f"✅ {text}\nوضعیت: {status}"), parse_mode="html")
@@ -12183,15 +12248,82 @@ def _cache_private_message(uid, message):
         return
     key = (int(uid), int(chat_id))
     bucket = _deleted_message_cache.setdefault(key, [])
-    bucket.append(message)
+    # Replace an already-cached copy (edited message / history seed) instead
+    # of duplicating it, then keep the bucket ordered by message id.
+    for i, old in enumerate(bucket):
+        if getattr(old, "id", None) == message_id:
+            bucket[i] = message
+            break
+    else:
+        bucket.append(message)
+    bucket.sort(key=lambda m: getattr(m, "id", 0))
     _deleted_message_index[(int(uid), int(message_id))] = int(chat_id)
-    if len(bucket) > HTX_DELETE_SNAPSHOT_SIZE:
-        stale = bucket[:-HTX_DELETE_SNAPSHOT_SIZE]
-        del bucket[:-HTX_DELETE_SNAPSHOT_SIZE]
+    if len(bucket) > HTX_SNAPSHOT_CACHE_SIZE:
+        stale = bucket[:-HTX_SNAPSHOT_CACHE_SIZE]
+        del bucket[:-HTX_SNAPSHOT_CACHE_SIZE]
         for old in stale:
             old_id = getattr(old, "id", None)
             if old_id is not None:
                 _deleted_message_index.pop((int(uid), int(old_id)), None)
+
+
+async def _seed_private_chat_snapshot(client, uid, chat_id):
+    """Back-fill one private chat's snapshot cache from the server history.
+
+    The live cache only knows messages that arrived while the bot was running
+    with «اسنپ شات پیوی» on. Anything older (an hour ago, before a redeploy,
+    before the toggle) was never cached, so it could not be archived when the
+    chat was cleared. Here the last incoming messages are read from Telegram
+    itself, so the cache holds up to HTX_SNAPSHOT_CACHE_SIZE recent incoming
+    messages and a message deleted from anywhere in that range is recoverable.
+    """
+    key = (int(uid), int(chat_id))
+    if key in _snapshot_seeded:
+        return
+    _snapshot_seeded.add(key)
+    try:
+        found = []
+        async for msg in client.iter_messages(chat_id, limit=HTX_SNAPSHOT_CACHE_SIZE * 2):
+            sender_id = getattr(msg, "sender_id", None)
+            if getattr(msg, "out", False) or not sender_id or int(sender_id) == int(uid):
+                continue
+            found.append(msg)
+            if len(found) >= HTX_SNAPSHOT_CACHE_SIZE:
+                break
+        for msg in reversed(found):
+            _cache_private_message(uid, msg)
+    except Exception as exc:
+        _snapshot_seeded.discard(key)  # allow a retry on the next incoming message
+        print(f"[SELF {uid}] snapshot seed failed for chat {chat_id}: {type(exc).__name__}: {exc}")
+
+
+async def _seed_private_snapshots(client, uid):
+    """Back-fill the most recent private dialogs (run at start-up and when
+    «اسنپ شات پیوی» is switched on)."""
+    try:
+        async for dialog in client.iter_dialogs(limit=HTX_SNAPSHOT_SEED_DIALOGS):
+            if self_get(uid, "snap_private", "off") != "on":
+                return
+            entity = getattr(dialog, "entity", None)
+            if not getattr(dialog, "is_user", False) or entity is None:
+                continue
+            if getattr(entity, "bot", False) or getattr(entity, "deleted", False):
+                continue
+            if int(getattr(entity, "id", 0) or 0) == int(uid):
+                continue
+            await _seed_private_chat_snapshot(client, uid, int(entity.id))
+            await asyncio.sleep(0.6)  # stay far away from flood limits
+    except Exception as exc:
+        print(f"[SELF {uid}] snapshot seeding stopped: {type(exc).__name__}: {exc}")
+
+
+def _start_snapshot_seed(client, uid, chat_id=None):
+    """Fire-and-forget seeding task (kept referenced so it is not garbage collected)."""
+    coro = (_seed_private_chat_snapshot(client, uid, chat_id) if chat_id
+            else _seed_private_snapshots(client, uid))
+    task = asyncio.create_task(coro)
+    _snapshot_seed_tasks.add(task)
+    task.add_done_callback(_snapshot_seed_tasks.discard)
 
 
 def _cache_group_reply(uid, message):
@@ -12300,7 +12432,9 @@ async def _archive_messages_to_saved(client, uid, messages):
 
 
 async def _archive_last_snapshot_before_delete(client, uid, chat_id, deleted_ids=None):
-    """Archive deleted messages; snapshot the last HTX_DELETE_SNAPSHOT_SIZE
+    """Archive deleted messages (at most HTX_DELETE_SNAPSHOT_SIZE per deletion,
+    taken from wherever in the chat they were); when the whole chat is gone,
+    archive the last HTX_DELETE_SNAPSHOT_SIZE
     only when the whole private history is gone."""
     try:
         deleted_ids = {int(x) for x in (deleted_ids or [])}
@@ -12322,13 +12456,46 @@ async def _archive_last_snapshot_before_delete(client, uid, chat_id, deleted_ids
         except Exception as exc:
             query_ok = False
             print(f"[SELF {uid}] deleted-chat remaining-message check failed: {exc}")
+        # Telegram may still report the last message for a moment right after
+        # a chat is cleared — look once more before deciding it is not empty.
+        if query_ok and remaining is True:
+            await asyncio.sleep(1.5)
+            remaining = None
+            with contextlib.suppress(Exception):
+                async for _ in client.iter_messages(chat_id, limit=1):
+                    remaining = True
+                    break
         whole_chat_cleared = query_ok and remaining is not True
 
         if whole_chat_cleared and cached:
-            snapshot = sorted(cached, key=lambda m: getattr(m, "id", 0))[-HTX_DELETE_SNAPSHOT_SIZE:]
-            return await _archive_messages_to_saved(client, uid, snapshot)
+            to_archive = sorted(cached, key=lambda m: getattr(m, "id", 0))[-HTX_DELETE_SNAPSHOT_SIZE:]
+        else:
+            # Whichever messages were deleted — even 200 messages up — up to
+            # HTX_DELETE_SNAPSHOT_SIZE of them are archived (newest first pick).
+            to_archive = sorted(deleted_messages, key=lambda m: getattr(m, "id", 0))[-HTX_DELETE_SNAPSHOT_SIZE:]
 
-        return await _archive_messages_to_saved(client, uid, deleted_messages)
+        # A cleared chat can arrive as several deletion events; never save a
+        # message twice.
+        fresh = []
+        for m in to_archive:
+            mid = (int(uid), int(getattr(m, "id", 0) or 0))
+            if mid in _snapshot_archived:
+                continue
+            _snapshot_archived.add(mid)
+            fresh.append(m)
+        if len(_snapshot_archived) > 5000:
+            _snapshot_archived.clear()
+        # Handled messages leave the cache, so a later deletion picks the next
+        # ones instead of the same messages again.
+        gone = {int(getattr(m, "id", 0) or 0) for m in (cached if whole_chat_cleared else deleted_messages)}
+        bucket = _deleted_message_cache.get((int(uid), int(chat_id)))
+        if bucket is not None:
+            bucket[:] = [m for m in bucket if int(getattr(m, "id", 0) or 0) not in gone]
+        for mid_ in gone:
+            _deleted_message_index.pop((int(uid), mid_), None)
+        if not fresh:
+            return 0
+        return await _archive_messages_to_saved(client, uid, fresh)
     except Exception as exc:
         print(f"[SELF {uid}] deleted-chat archive failed: {exc}")
         return 0
@@ -12352,6 +12519,10 @@ async def self_handle_incoming(event, uid):
     if event.is_private and sender_id and sender_id != int(uid):
         if self_get(uid, "snap_private", "off") == "on":
             _cache_private_message(uid, event.message)
+            # First message seen from this chat since start-up: pull its real
+            # recent history so older messages are covered too.
+            if (int(uid), int(event.chat_id)) not in _snapshot_seeded:
+                _start_snapshot_seed(client, uid, int(event.chat_id))
         await _self_capture_timer_media(event, uid)
 
     # «اسنپ شات گپ»: only reply messages are worth caching — everything
@@ -12566,6 +12737,9 @@ MOZY_DEFAULT_INTERVALS = {
     "banana": 185,   # 3 minutes + 5 seconds
     "spin": 21605,   # 6 hours + 5 seconds
 }
+MOZY_BANANA_WORDS = ("موز", "مظ")
+MOZY_BANANA_RANDOM_CHANCE = 0.35   # chance a turn breaks the strict alternation
+_mozy_banana_last = {}             # (uid, chat_id) -> last word sent
 MOZY_RESPONSE_WAIT = 20.0
 MOZY_POLL_INTERVAL = 0.7
 _mozy_running = set()
@@ -12797,6 +12971,21 @@ async def _mozy_find_and_click(client, uid: int, chat_id: int, trigger_message_i
     return False
 
 
+def _mozy_banana_next_word(uid: int, chat_id: int) -> str:
+    """Mostly alternates موز / مظ / موز / مظ; now and then it is random, so
+    repeats like مظ مظ موز or موز موز happen too."""
+    key = (int(uid), int(chat_id))
+    last = _mozy_banana_last.get(key)
+    if last is None:
+        word = random.choice(MOZY_BANANA_WORDS)
+    elif random.random() < MOZY_BANANA_RANDOM_CHANCE:
+        word = random.choice(MOZY_BANANA_WORDS)
+    else:
+        word = MOZY_BANANA_WORDS[1] if last == MOZY_BANANA_WORDS[0] else MOZY_BANANA_WORDS[0]
+    _mozy_banana_last[key] = word
+    return word
+
+
 async def _mozy_execute(client, uid: int, chat_id: int, feature: str):
     key = (int(uid), int(chat_id), feature)
     if key in _mozy_running:
@@ -12807,6 +12996,8 @@ async def _mozy_execute(client, uid: int, chat_id: int, feature: str):
     _mozy_running.add(key)
     try:
         command = MOZY_COMMANDS[feature]
+        if feature == "banana":
+            command = _mozy_banana_next_word(uid, chat_id)
         try:
             trigger = await client.send_message(int(chat_id), command)
         except FloodWaitError as exc:
@@ -13536,6 +13727,8 @@ async def self_worker(user_id: int, session_string: str, sub_type: int = 0):
         self_workers[user_id] = asyncio.current_task()
         presence_task = asyncio.create_task(_presence_loop(client, user_id))
         print(f"[SELF {user_id}] started")
+        if self_get(user_id, "snap_private", "off") == "on":
+            _start_snapshot_seed(client, user_id)
 
         last_clock_value = None
 
