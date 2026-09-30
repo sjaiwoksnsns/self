@@ -1459,7 +1459,6 @@ SELF_DEFAULTS = {
     "action_voice":"off", "action_round":"off", "action_video":"off", "action_photo":"off",
     "action_document":"off", "action_sticker":"off", "always_online":"off",
     "premium_emoji_map":"{}",
-    "premium_channel":"on", "premium_channels":"[]",
 }
 # Text-format toggles shown on the «اکشن» screen:
 # (setting key, callback action, button label, open tag, close tag)
@@ -1822,25 +1821,6 @@ def self_save_premium_emoji_map(uid, mapping):
     self_set(uid, "premium_emoji_map", json.dumps(mapping, ensure_ascii=False))
 
 
-PREMIUM_CHANNELS_MAX = 10
-
-
-def self_premium_channels(uid):
-    """Channels registered for premium-emoji publishing:
-    [{"id": -100…, "username": "name", "title": "…"}]"""
-    try:
-        raw = json.loads(self_get(uid, "premium_channels", "[]"))
-    except Exception:
-        return []
-    if not isinstance(raw, list):
-        return []
-    return [c for c in raw if isinstance(c, dict) and c.get("username")]
-
-
-def self_save_premium_channels(uid, channels):
-    self_set(uid, "premium_channels", json.dumps(channels, ensure_ascii=False))
-
-# ------------------------------------------------------------------
 # Pending premium-emoji relay texts, keyed by a short token.
 #
 # Telegram strips custom-emoji entities the moment a message is *sent*
@@ -2457,7 +2437,7 @@ PANEL_COMMAND_SCREENS = {
     ]),
     "logo": ("لوگوساز", [
         "دستورات",
-        "<code>.لوگو 12 HusteRIX</code>\nعدد = شماره قالب (۱ تا ۱۲)",
+        "<code>.لوگو 12 HusteRIX</code>\nعدد = شماره قالب (۱ تا ۱۲)\nزیرعنوان اختیاری: <code>.لوگو 1 HusteRIX | Premium Self</code>",
     ]),
     "profile": ("کپی پروفایل", [
         "دستورات",
@@ -2622,9 +2602,7 @@ async def _panel_show_premium_emoji(event, uid):
 
     blocks = [
         f"{HTX_TAG} • 💎 ایموجی پریمیوم",
-        f"وضعیت : {_onoff(self_get(uid, 'premium_channel'))}",
         f"تعداد ثبت‌شده : <b>{len(valid)}</b>",
-        f"کانال ثبت‌شده : <b>{len(self_premium_channels(uid))}</b>",
         "",
         "<b>ثبت:</b>",
         "<code>.ثبت ایموجی [پریمیوم] [عادی]</code>",
@@ -2645,11 +2623,7 @@ async def _panel_show_premium_emoji(event, uid):
     if len(valid) > 5:
         blocks.append(f"… و {len(valid) - 5} مورد دیگر")
 
-    status = self_get(uid, "premium_channel")
     rows = [
-        [btn(f"وضعیت : {_onoff(status)}", _self_cb(uid, "pec_toggle"),
-             "success" if status == "on" else "danger")],
-        [btn("استفاده در کانال", _self_cb(uid, "pec_open"), "primary")],
         [btn(
             "بازگشت",
             _self_cb(uid, f"pg:{page_idx}"),
@@ -2664,48 +2638,6 @@ async def _panel_show_premium_emoji(event, uid):
         parse_mode="html",
         buttons=rows,
     )
-
-
-async def _panel_show_premium_channels(event, uid):
-    """«استفاده در کانال» screen: usage + one button per registered channel."""
-    uid = int(uid)
-    channels = self_premium_channels(uid)
-    blocks = [
-        f"{HTX_TAG} • استفاده در کانال",
-        "استفاده در کانال : <code>.انتشار در چنل @channel</code>",
-        "ثبت کانال : <code>.ثبت کانال @channel</code>",
-    ]
-    rows = [
-        [btn(f"@{c['username']}", _self_cb(uid, f"pec_ch:{i}"), "primary")]
-        for i, c in enumerate(channels)
-    ]
-    if channels:
-        rows.append([btn("پاکسازی کانال", _self_cb(uid, "pec_clear"), "danger")])
-    rows.append([btn("بازگشت", _self_cb(uid, "premium_emoji_open"), "danger",
-                     icon=PREMIUM_EMOJI["self_back"][0])])
-    await safe_callback_edit(event, _htx_stack(*blocks), parse_mode="html", buttons=rows)
-
-
-async def _panel_show_premium_channel_info(event, uid, idx):
-    """«کانال ثبت شده» screen: name / username / id + delete."""
-    uid = int(uid)
-    channels = self_premium_channels(uid)
-    if not (0 <= idx < len(channels)):
-        await _panel_show_premium_channels(event, uid)
-        return
-    c = channels[idx]
-    blocks = [
-        f"{HTX_TAG} • کانال ثبت شده",
-        f"نام: {html.escape(str(c.get('title') or '-'))}",
-        f"یوزرنیم: @{html.escape(str(c['username']))}",
-        f"آیدی: <code>{html.escape(str(c.get('id', '-')))}</code>",
-    ]
-    rows = [
-        [btn("🗑 حذف کانال", _self_cb(uid, f"pec_del:{idx}"), "danger")],
-        [btn("بازگشت", _self_cb(uid, "pec_open"), "danger",
-             icon=PREMIUM_EMOJI["self_back"][0])],
-    ]
-    await safe_callback_edit(event, _htx_stack(*blocks), parse_mode="html", buttons=rows)
 
 
 async def _panel_show_group(event, uid, key):
@@ -5043,7 +4975,8 @@ async def _get_inline_bot_entity(client):
 # since it's the one that inserted it).
 _LAST_PANEL_MSG = {}
 
-HTX_PANEL_CLOSE_DELETE_DELAY = 0  # «بستن» removes the card immediately (no delay)
+HTX_PANEL_CLOSE_DELETE_DELAY = 0.5  # «بستن» removes the card after 0.5s
+HTX_PANEL_CMD_DELETE_DELAY = 0.5    # «.پنل» command message is removed 0.5s after the card lands
 
 
 async def _delete_closed_panel(uid, peer, message_id, delay=HTX_PANEL_CLOSE_DELETE_DELAY):
@@ -6335,35 +6268,6 @@ async def handle_self_panel_callback(event):
         await _panel_show_premium_emoji(event, uid)
         return True
 
-    if action == "pec_toggle":
-        current = self_get(uid, "premium_channel")
-        self_set(uid, "premium_channel", "off" if current == "on" else "on")
-        await _panel_show_premium_emoji(event, uid)
-        return True
-
-    if action == "pec_open":
-        await _panel_show_premium_channels(event, uid)
-        return True
-
-    if action.startswith("pec_ch:"):
-        tail = action.split(":", 1)[1]
-        await _panel_show_premium_channel_info(event, uid, int(tail) if tail.isdigit() else -1)
-        return True
-
-    if action.startswith("pec_del:"):
-        tail = action.split(":", 1)[1]
-        channels = self_premium_channels(uid)
-        if tail.isdigit() and 0 <= int(tail) < len(channels):
-            channels.pop(int(tail))
-            self_save_premium_channels(uid, channels)
-        await _panel_show_premium_channels(event, uid)
-        return True
-
-    if action == "pec_clear":
-        self_save_premium_channels(uid, [])
-        await _panel_show_premium_channels(event, uid)
-        return True
-
     if action == "cs_open":
         return await _cs_open(event, uid)
 
@@ -6478,14 +6382,14 @@ async def handle_self_panel_callback(event):
     if action == "close":
         _first_comment_channel_sessions.pop(int(uid), None)
         last_panel = _LAST_PANEL_MSG.pop(int(uid), None)
-        # No delay and no intermediate edit: the popup answer and the real
-        # deletion run at the same time, so the card disappears instantly.
+        # Popup answer fires immediately; the card is deleted after
+        # HTX_PANEL_CLOSE_DELETE_DELAY (0.5s).
         deleted = False
         if last_panel:
             peer, message_id = last_panel
             results = await asyncio.gather(
                 safe_answer(event, "پنل با موفقیت بسته شد."),
-                _delete_closed_panel(uid, peer, message_id, delay=0),
+                _delete_closed_panel(uid, peer, message_id, delay=HTX_PANEL_CLOSE_DELETE_DELAY),
                 return_exceptions=True,
             )
             deleted = results[1] is True
@@ -6795,7 +6699,9 @@ async def handle_self_panel_callback(event):
     if action == "logo":
         await safe_callback_edit(event, 
             "🎨 <b>لوگوساز</b>\n\n"
-            "ساخت لوگو با ۱۲ قالب داخلی و رایگان:\n<code>.لوگو 12 HusteRIX</code>",
+            "ساخت لوگوی حرفه‌ای با ۱۲ قالب:\n<code>.لوگو 12 HusteRIX</code>\n"
+            "با زیرعنوان: <code>.لوگو 1 HusteRIX | Premium Self</code>\n\n"
+            + "\n".join(f"{i}. {name}" for i, (_k, name) in LOGO_TEMPLATES.items()),
             parse_mode="html",
             buttons=[[btn("بازگشت", _self_cb(uid, "panel"), "primary", icon=PREMIUM_EMOJI["self_back"][0])]],
         )
@@ -8892,10 +8798,10 @@ _CRYPTO_GECKO_IDS = {
 # Local logo templates. These are real rendering templates, not a fake remote
 # template-id mapping. The supported range is exactly the templates below.
 LOGO_TEMPLATES = {
-    1: ("classic", "کلاسیک"), 2: ("neon", "نئون"), 3: ("minimal", "مینیمال"),
-    4: ("badge", "نشان"), 5: ("shadow", "سایه"), 6: ("gradient", "گرادیان"),
-    7: ("outline", "خطی"), 8: ("split", "دو رنگ"), 9: ("glow", "درخشش"),
-    10: ("terminal", "ترمینال"), 11: ("stamp", "مهر"), 12: ("diamond", "الماس"),
+    1: ("classic", "طلایی سلطنتی"), 2: ("neon", "نئون سینت‌ویو"), 3: ("minimal", "مینیمال برند"),
+    4: ("badge", "نشان روبان‌دار"), 5: ("shadow", "سایه بلند"), 6: ("gradient", "شیشه‌ای آرورا"),
+    7: ("outline", "سایبری"), 8: ("split", "دو رنگ مورب"), 9: ("glow", "طلای مذاب"),
+    10: ("terminal", "ترمینال"), 11: ("stamp", "مهر وینتیج"), 12: ("diamond", "الماس لوکس"),
 }
 
 def _fa_digits(text):
@@ -9617,92 +9523,632 @@ async def _self_currency_command(event, uid, text):
         await event.edit(caption, parse_mode="html")
     return True
 
+# ============================================================
+# PRO LOGO ENGINE
+# 12 hand-built templates rendered locally with Pillow: metallic gradients,
+# multi-layer glow, long shadows, glass cards, emblems, reflections, grain
+# and vignette. Rendered at 1.5x and downsampled for clean anti-aliasing.
+# Optional subtitle:  .لوگو 12 HusteRIX | Premium Store
+# Fonts: put the .ttf files in a «fonts» folder next to this script
+# (falls back to system fonts, then DejaVu).
+# ============================================================
+import math
+import os
+_LOGO_OUT_W, _LOGO_OUT_H = 1600, 1000
+_LOGO_SS = 1.5
+_LOGO_RTL_RE = re.compile(r"[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]")
+_LOGO_FONT_DIRS = [
+    Path(__file__).resolve().parent / "fonts",
+    Path.home() / ".fonts",
+    Path("/usr/local/share/fonts"),
+    Path("/usr/share/fonts"),
+]
+_LOGO_FONT_FILES = {
+    "cinzel": ("Cinzel[wght].ttf", "Cinzel-Black.ttf", "Cinzel-Bold.ttf"),
+    "audiowide": ("Audiowide-Regular.ttf",),
+    "montserrat": ("Montserrat[wght].ttf", "Montserrat-ExtraBold.ttf", "Montserrat-Bold.ttf"),
+    "bebas": ("BebasNeue-Regular.ttf",),
+    "anton": ("Anton-Regular.ttf",),
+    "poppins": ("Poppins-Black.ttf", "Poppins-ExtraBold.ttf", "Poppins-Bold.ttf"),
+    "orbitron": ("Orbitron[wght].ttf", "Orbitron-Black.ttf", "Orbitron-Bold.ttf"),
+    "playfair": ("PlayfairDisplay[wght].ttf", "PlayfairDisplay-Black.ttf", "PlayfairDisplay-Bold.ttf"),
+    "jetbrains": ("JetBrainsMono[wght].ttf", "JetBrainsMono-ExtraBold.ttf", "JetBrainsMono-Bold.ttf"),
+    "blackops": ("BlackOpsOne-Regular.ttf",),
+    "vazir": ("Vazirmatn[wght].ttf", "Vazirmatn-Black.ttf", "Vazirmatn-Bold.ttf"),
+    "fallback": ("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "NotoSans-Bold.ttf"),
+}
+_LOGO_FONT_PATHS = {}
+
+
+_LOGO_FONT_INDEX = None
+
+
+def _logo_font_path(key):
+    """Exact filename lookup (no glob: names like «Cinzel[wght].ttf» contain
+    brackets). The font folders are indexed once and cached."""
+    global _LOGO_FONT_INDEX
+    if key in _LOGO_FONT_PATHS:
+        return _LOGO_FONT_PATHS[key]
+    if _LOGO_FONT_INDEX is None:
+        wanted = {n for names in _LOGO_FONT_FILES.values() for n in names}
+        _LOGO_FONT_INDEX = {}
+        for base in _LOGO_FONT_DIRS:
+            if not base.exists():
+                continue
+            for root, _dirs, files in os.walk(base):
+                for fname in files:
+                    if fname in wanted and fname not in _LOGO_FONT_INDEX:
+                        _LOGO_FONT_INDEX[fname] = Path(root) / fname
+    found = next((_LOGO_FONT_INDEX[n] for n in _LOGO_FONT_FILES.get(key, ()) if n in _LOGO_FONT_INDEX), None)
+    _LOGO_FONT_PATHS[key] = found
+    return found
+
+
+def _logo_font(key, size, weight=None):
+    from PIL import ImageFont
+    size = max(8, int(size))
+    path = _logo_font_path(key) or _logo_font_path("fallback")
+    if not path:
+        try:
+            return ImageFont.load_default(size)
+        except Exception:
+            return ImageFont.load_default()
+    try:
+        font = ImageFont.truetype(str(path), size, layout_engine=ImageFont.Layout.RAQM)
+    except Exception:
+        font = ImageFont.truetype(str(path), size)
+    if weight:
+        with contextlib.suppress(Exception):
+            axes = font.get_variation_axes()
+            font.set_variation_by_axes([
+                max(a.get("minimum", weight), min(a.get("maximum", weight), weight))
+                if str(a.get("name", b"")).lower().find("weight") >= 0 or i == 0 else a.get("default", 0)
+                for i, a in enumerate(axes)
+            ])
+    return font
+
+
+def _logo_shape_rtl(text):
+    """Only needed when Pillow has no libraqm: fall back to arabic_reshaper."""
+    from PIL import features
+    if not _LOGO_RTL_RE.search(text) or features.check("raqm"):
+        return text
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+        return get_display(arabic_reshaper.reshape(text))
+    except Exception:
+        return text
+
+
+def _logo_text_masks(text, font, tracking=0, stroke=0):
+    """Returns (fill_mask, outer_mask) of identical size, tightly cropped.
+    outer_mask = glyphs thickened by `stroke` (used for outlines)."""
+    from PIL import Image, ImageDraw
+    pad = stroke + 6
+    probe = ImageDraw.Draw(Image.new("L", (1, 1)))
+    per_char = bool(tracking) and not _LOGO_RTL_RE.search(text) and len(text) > 1
+    if per_char:
+        widths = [font.getlength(ch) for ch in text]
+        l, t, r, b = probe.textbbox((0, 0), text, font=font, stroke_width=stroke)
+        w = int(sum(widths) + tracking * (len(text) - 1) + pad * 2 + abs(l) + 4)
+        h = int(b - min(t, 0) + pad * 2)
+        fill = Image.new("L", (w, h), 0)
+        outer = Image.new("L", (w, h), 0)
+        df, do = ImageDraw.Draw(fill), ImageDraw.Draw(outer)
+        x, y = pad - min(l, 0), pad - min(t, 0)
+        for ch, cw in zip(text, widths):
+            df.text((x, y), ch, font=font, fill=255)
+            do.text((x, y), ch, font=font, fill=255, stroke_width=stroke, stroke_fill=255)
+            x += cw + tracking
+    else:
+        l, t, r, b = probe.textbbox((0, 0), text, font=font, stroke_width=stroke)
+        w, h = int(r - l + pad * 2), int(b - t + pad * 2)
+        fill = Image.new("L", (w, h), 0)
+        outer = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(fill).text((pad - l, pad - t), text, font=font, fill=255)
+        ImageDraw.Draw(outer).text((pad - l, pad - t), text, font=font, fill=255,
+                                   stroke_width=stroke, stroke_fill=255)
+    box = outer.getbbox() or (0, 0, outer.width, outer.height)
+    return fill.crop(box), outer.crop(box)
+
+
+def _logo_fit(text, key, weight, max_w, max_h, tracking=0.0, stroke=0.0):
+    size = int(max_h * 1.25)
+    best = None
+    for _ in range(8):
+        font = _logo_font(key, size, weight)
+        fm, om = _logo_text_masks(text, font, int(size * tracking), int(size * stroke))
+        scale = min(max_w / max(1, om.width), max_h / max(1, om.height))
+        best = (font, fm, om, size)
+        if 0.94 <= scale <= 1.0:
+            break
+        size = max(10, int(size * scale * 0.985))
+    font, fm, om, size = best
+    while (om.width > max_w or om.height > max_h) and size > 10:
+        size = int(size * 0.93)
+        font = _logo_font(key, size, weight)
+        fm, om = _logo_text_masks(text, font, int(size * tracking), int(size * stroke))
+    return fm, om, size
+
+
+def _logo_ramp(gray, stops):
+    """Map an L image through colour stops [(pos 0..1, (r,g,b[,a])), ...] -> RGBA."""
+    from PIL import Image
+    stops = [(p, tuple(c) + ((255,) if len(c) == 3 else ())) for p, c in stops]
+    luts = [[], [], [], []]
+    for i in range(256):
+        t = i / 255
+        for (p0, c0), (p1, c1) in zip(stops, stops[1:]):
+            if t <= p1 or (p1 == stops[-1][0]):
+                k = 0 if p1 == p0 else min(1, max(0, (t - p0) / (p1 - p0)))
+                col = [int(c0[j] + (c1[j] - c0[j]) * k) for j in range(4)]
+                break
+        else:
+            col = list(stops[-1][1])
+        if t < stops[0][0]:
+            col = list(stops[0][1])
+        for j in range(4):
+            luts[j].append(col[j])
+    return Image.merge("RGBA", [gray.point(l) for l in luts])
+
+
+def _logo_linear(size, stops, angle=90):
+    from PIL import Image
+    w, h = size
+    d = int(math.hypot(w, h)) + 4
+    g = Image.linear_gradient("L").resize((d, d), Image.BILINEAR).rotate(90 - angle, resample=Image.BICUBIC)
+    l, t = (d - w) // 2, (d - h) // 2
+    return _logo_ramp(g.crop((l, t, l + w, t + h)), stops)
+
+
+def _logo_radial(size, stops, center=None, radius=None):
+    from PIL import Image
+    w, h = size
+    cx, cy = center or (w / 2, h / 2)
+    r = int(radius or math.hypot(w, h) / 2)
+    g = Image.new("L", (w, h), 255)
+    g.paste(Image.radial_gradient("L").resize((r * 2, r * 2), Image.BILINEAR), (int(cx - r), int(cy - r)))
+    return _logo_ramp(g, stops)
+
+
+def _logo_place(canvas, layer, x, y):
+    from PIL import Image
+    full = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    full.paste(layer, (int(x), int(y)))
+    canvas.alpha_composite(full)
+
+
+def _logo_fill(mask, paint):
+    """paint: RGB tuple or RGBA image the size of mask."""
+    from PIL import Image, ImageChops
+    if isinstance(paint, tuple):
+        layer = Image.new("RGBA", mask.size, paint[:3] + (255,))
+        alpha = mask if len(paint) == 3 else mask.point(lambda v, a=paint[3]: v * a // 255)
+    else:
+        layer = paint.copy()
+        alpha = ImageChops.multiply(layer.getchannel("A"), mask)
+    layer.putalpha(alpha)
+    return layer
+
+
+def _logo_glow(canvas, mask, x, y, color, radius, strength=1.0):
+    from PIL import Image, ImageFilter
+    pad = int(radius * 3) + 2
+    m = Image.new("L", (mask.width + pad * 2, mask.height + pad * 2), 0)
+    m.paste(mask, (pad, pad))
+    m = m.filter(ImageFilter.GaussianBlur(radius))
+    if strength != 1.0:
+        m = m.point(lambda v: min(255, int(v * strength)))
+    _logo_place(canvas, _logo_fill(m, tuple(color)), x - pad, y - pad)
+
+
+def _logo_finish(canvas, rng, grain=10, vignette=120):
+    from PIL import Image
+    w, h = canvas.size
+    if vignette:
+        v = _logo_radial((w, h), [(0, (0, 0, 0, 0)), (0.55, (0, 0, 0, 0)), (1, (0, 0, 0, vignette))],
+                         radius=int(math.hypot(w, h) / 2))
+        canvas.alpha_composite(v)
+    if grain:
+        n = Image.effect_noise((w // 2, h // 2), 48).resize((w, h))
+        layer = Image.merge("RGBA", (n, n, n, Image.new("L", (w, h), grain)))
+        canvas.alpha_composite(layer)
+    return canvas
+
+
+def _logo_sparkle(draw, x, y, s, color):
+    k = s * 0.16
+    draw.polygon([(x, y - s), (x + k, y - k), (x + s, y), (x + k, y + k),
+                  (x, y + s), (x - k, y + k), (x - s, y), (x - k, y - k)], fill=color)
+
+
+def _logo_blobs(size, blobs, blur):
+    from PIL import Image, ImageDraw, ImageFilter
+    w, h = size
+    small = Image.new("RGBA", (w // 8, h // 8), (0, 0, 0, 0))
+    d = ImageDraw.Draw(small)
+    for cx, cy, r, col in blobs:
+        d.ellipse(((cx - r) * w / 8, (cy - r) * h / 8, (cx + r) * w / 8, (cy + r) * h / 8), fill=col)
+    small = small.filter(ImageFilter.GaussianBlur(blur))
+    return small.resize((w, h), Image.BICUBIC)
+
+
 def _logo_render_sync(template_id: int, text_value: str):
     from io import BytesIO
-    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    from PIL import Image, ImageDraw, ImageFilter, ImageChops
+    import random as _rnd
 
     template = LOGO_TEMPLATES[template_id][0]
-    canvas = Image.new("RGB", (1200, 700), (18, 18, 24))
-    draw = ImageDraw.Draw(canvas)
-    font_candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-    ]
-    font_path = next((x for x in font_candidates if Path(x).exists()), None)
-    try:
-        font = ImageFont.truetype(font_path, 110) if font_path else ImageFont.load_default()
-        small = ImageFont.truetype(font_path, 34) if font_path else ImageFont.load_default()
-    except Exception:
-        font = ImageFont.load_default()
-        small = font
+    raw = text_value.replace("\n", " ").strip()
+    title, _, subtitle = raw.partition("|")
+    title, subtitle = _logo_shape_rtl(title.strip() or "HTX"), _logo_shape_rtl(subtitle.strip())
+    rtl = bool(_LOGO_RTL_RE.search(title))
+    sub_rtl = bool(_LOGO_RTL_RE.search(subtitle))
+    rng = _rnd.Random(f"{template_id}:{raw}")
 
-    bbox = draw.textbbox((0, 0), text_value, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x, y = (1200 - tw) // 2, (700 - th) // 2 - 20
+    W, H = int(_LOGO_OUT_W * _LOGO_SS), int(_LOGO_OUT_H * _LOGO_SS)
+    u = W / 1600
+    cx, cy = W // 2, H // 2
 
-    if template == "classic":
-        draw.rounded_rectangle((100, 100, 1100, 600), radius=45, outline=(240, 240, 240), width=6)
-        fill = (245, 245, 245)
-    elif template == "neon":
-        fill = (80, 220, 255)
-        for width, alpha in ((40, 40), (24, 70), (12, 110)):
-            glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-            gd = ImageDraw.Draw(glow)
-            gd.text((x, y), text_value, font=font, fill=(*fill, alpha))
-            glow = glow.filter(ImageFilter.GaussianBlur(width))
-            canvas = Image.alpha_composite(canvas.convert("RGBA"), glow).convert("RGB")
-            draw = ImageDraw.Draw(canvas)
-    elif template == "minimal":
-        fill = (250, 250, 250)
-        draw.line((160, 530, 1040, 530), fill=fill, width=4)
-    elif template == "badge":
-        draw.ellipse((120, 120, 1080, 580), outline=(240, 190, 70), width=10)
-        fill = (240, 190, 70)
-    elif template == "shadow":
-        fill = (255, 255, 255)
-        shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        sd = ImageDraw.Draw(shadow)
-        sd.text((x + 18, y + 18), text_value, font=font, fill=(0, 0, 0, 180))
-        canvas = Image.alpha_composite(canvas.convert("RGBA"), shadow).convert("RGB")
-        draw = ImageDraw.Draw(canvas)
-    elif template == "gradient":
-        for i in range(canvas.height):
-            c = int(40 + (i / canvas.height) * 150)
-            draw.line((0, i, canvas.width, i), fill=(c, 70, 180))
-        fill = (255, 255, 255)
-    elif template == "outline":
-        fill = (18, 18, 24)
-        stroke = (255, 255, 255)
-        draw.text((x, y), text_value, font=font, fill=fill, stroke_width=5, stroke_fill=stroke)
-        fill = None
-    elif template == "split":
-        draw.rectangle((0, 0, 600, 700), fill=(35, 110, 210))
-        draw.rectangle((600, 0, 1200, 700), fill=(220, 70, 100))
-        fill = (255, 255, 255)
-    elif template == "glow":
-        fill = (255, 210, 80)
-        glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        gd = ImageDraw.Draw(glow)
-        gd.text((x, y), text_value, font=font, fill=(255, 210, 80, 210))
-        glow = glow.filter(ImageFilter.GaussianBlur(28))
-        canvas = Image.alpha_composite(canvas.convert("RGBA"), glow).convert("RGB")
-        draw = ImageDraw.Draw(canvas)
-    elif template == "terminal":
-        fill = (80, 255, 130)
-        draw.rectangle((80, 90, 1120, 610), outline=fill, width=4)
-        draw.text((120, 120), "$ logo", font=small, fill=fill)
-    elif template == "stamp":
-        fill = (235, 235, 235)
-        draw.rectangle((120, 120, 1080, 580), outline=fill, width=12)
-        draw.text((160, 540), "HusteRIX", font=small, fill=fill)
-    else:  # diamond
-        fill = (240, 210, 80)
-        draw.polygon([(600, 80), (1080, 350), (600, 620), (120, 350)], outline=fill, width=10)
+    def tfont(key):  # Persian text always uses Vazirmatn Black
+        return ("vazir", 900) if rtl else key
 
-    if fill is not None:
-        draw.text((x, y), text_value, font=font, fill=fill)
+    def sfont(key):
+        return ("vazir", 700) if sub_rtl else key
+
+    def fit_title(key, weight, max_w, max_h, tracking=0.0, stroke=0.0):
+        k, wgt = tfont((key, weight)) if not rtl else ("vazir", 900)
+        return _logo_fit(title, k, wgt, max_w, max_h, 0 if rtl else tracking, stroke)
+
+    def fit_sub(key, weight, max_w, max_h, tracking=0.25):
+        if not subtitle:
+            return None
+        k, wgt = ("vazir", 700) if sub_rtl else (key, weight)
+        text = subtitle if sub_rtl else subtitle.upper()
+        return _logo_fit(text, k, wgt, max_w, max_h * (1.6 if sub_rtl else 1.0), 0 if sub_rtl else tracking)[0]
+
+    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 255))
+
+    if template == "classic":  # Royal gold
+        canvas.alpha_composite(_logo_radial((W, H), [(0, (30, 38, 66)), (0.7, (10, 13, 26)), (1, (4, 5, 12))]))
+        gold = [(0, (255, 240, 185)), (0.42, (226, 178, 72)), (0.52, (150, 98, 26)), (0.7, (214, 160, 60)), (1, (255, 226, 140))]
+        d = ImageDraw.Draw(canvas)
+        for inset, wd in ((70 * u, int(5 * u)), (92 * u, int(2 * u))):
+            d.rectangle((inset, inset, W - inset, H - inset), outline=(205, 160, 70), width=wd)
+        for px, py in ((81 * u, 81 * u), (W - 81 * u, 81 * u), (81 * u, H - 81 * u), (W - 81 * u, H - 81 * u)):
+            s = 18 * u
+            d.polygon([(px, py - s), (px + s, py), (px, py + s), (px - s, py)], fill=(230, 190, 95))
+        fm, om, _ = fit_title("cinzel", 900, W * 0.72, H * 0.26)
+        tx, ty = cx - fm.width // 2, int(cy - fm.height * 0.62)
+        _logo_glow(canvas, fm, tx + int(8 * u), ty + int(12 * u), (0, 0, 0), 14 * u, 1.4)
+        _logo_glow(canvas, fm, tx, ty, (255, 190, 80), 40 * u, 0.35)
+        _logo_place(canvas, _logo_fill(fm, _logo_linear(fm.size, gold, 90)), tx, ty)
+        ly = ty + fm.height + 60 * u
+        d = ImageDraw.Draw(canvas)
+        d.line((cx - 330 * u, ly, cx - 30 * u, ly), fill=(205, 160, 70), width=int(3 * u))
+        d.line((cx + 30 * u, ly, cx + 330 * u, ly), fill=(205, 160, 70), width=int(3 * u))
+        s = 13 * u
+        d.polygon([(cx, ly - s), (cx + s, ly), (cx, ly + s), (cx - s, ly)], fill=(240, 200, 110))
+        sm = fit_sub("montserrat", 600, W * 0.6, 44 * u, 0.42)
+        if sm:
+            _logo_place(canvas, _logo_fill(sm, (232, 200, 130)), cx - sm.width // 2, ly + 45 * u)
+        _logo_finish(canvas, rng, grain=9, vignette=150)
+
+    elif template == "neon":  # Synthwave neon
+        canvas.alpha_composite(_logo_linear((W, H), [(0, (8, 4, 24)), (0.6, (28, 6, 48)), (1, (60, 8, 70))], 90))
+        grid = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        g = ImageDraw.Draw(grid)
+        hy = int(H * 0.66)
+        for i in range(1, 14):
+            y = hy + (H - hy) * (i / 13) ** 1.8
+            g.line((0, y, W, y), fill=(255, 60, 200, 90), width=max(1, int(2 * u)))
+        for i in range(-16, 17):
+            g.line((cx + i * 40 * u, hy, cx + i * 260 * u, H), fill=(255, 60, 200, 80), width=max(1, int(2 * u)))
+        grid.putalpha(ImageChops.multiply(grid.getchannel("A"), _logo_linear((W, H), [(0, (0, 0, 0)), (0.62, (0, 0, 0)), (1, (255, 255, 255))], 90).getchannel("R")))
+        canvas.alpha_composite(grid)
+        canvas.alpha_composite(_logo_radial((W, H), [(0, (255, 60, 180, 90)), (1, (0, 0, 0, 0))], (cx, hy), int(700 * u)))
+        fm, om, size = fit_title("audiowide", None, W * 0.78, H * 0.25, stroke=0.035)
+        tx, ty = cx - om.width // 2, int(H * 0.42 - om.height / 2)
+        ring = ImageChops.subtract(om, fm)
+        _logo_glow(canvas, om, tx, ty, (255, 40, 200), 55 * u, 1.3)
+        _logo_glow(canvas, om, tx, ty, (255, 90, 230), 16 * u, 2.2)
+        _logo_place(canvas, _logo_fill(ring, (255, 170, 240)), tx, ty)
+        _logo_place(canvas, _logo_fill(fm, (255, 245, 255)), tx, ty)
+        sm = fit_sub("montserrat", 700, W * 0.6, 46 * u, 0.45)
+        if sm:
+            sx, sy = cx - sm.width // 2, ty + om.height + 60 * u
+            _logo_glow(canvas, sm, sx, sy, (0, 230, 255), 14 * u, 2.0)
+            _logo_place(canvas, _logo_fill(sm, (210, 255, 255)), sx, sy)
+        _logo_finish(canvas, rng, grain=8, vignette=140)
+
+    elif template == "minimal":  # Mark + wordmark
+        canvas.alpha_composite(Image.new("RGBA", (W, H), (246, 244, 239, 255)))
+        mark = int(H * 0.25)
+        fm, om, _ = fit_title("montserrat", 800, W * 0.58, H * 0.17, tracking=0.04)
+        sm = fit_sub("montserrat", 500, W * 0.5, 34 * u, 0.35)
+        block_h = max(mark, fm.height + (sm.height + 40 * u if sm else 0))
+        total_w = mark + 70 * u + fm.width
+        mx, my = int(cx - total_w / 2), int(cy - mark / 2)
+        sh = Image.new("L", (mark, mark), 0)
+        ImageDraw.Draw(sh).rounded_rectangle((0, 0, mark - 1, mark - 1), radius=int(mark * 0.26), fill=255)
+        _logo_glow(canvas, sh, mx, my + int(18 * u), (0, 0, 0, 90), 22 * u, 1.0)
+        _logo_place(canvas, _logo_fill(sh, _logo_linear((mark, mark), [(0, (255, 98, 64)), (1, (230, 40, 90))], 45)), mx, my)
+        initial = title.strip()[:1].upper()
+        if rtl:
+            initial += "\u200d"  # joined (initial) form, so «ه» doesn't read like the digit ۵
+        im = _logo_fit(initial, "vazir" if rtl else "montserrat", 900, mark * 0.6, mark * 0.52)[0]
+        _logo_place(canvas, _logo_fill(im, (255, 255, 255)), mx + (mark - im.width) // 2, my + (mark - im.height) // 2)
+        wx = mx + mark + 70 * u
+        wy = int(cy - (fm.height + (sm.height + 36 * u if sm else 0)) / 2)
+        _logo_place(canvas, _logo_fill(fm, (22, 22, 28)), wx, wy)
+        if sm:
+            _logo_place(canvas, _logo_fill(sm, (120, 118, 128)), wx + 4 * u, wy + fm.height + 36 * u)
+        _logo_finish(canvas, rng, grain=6, vignette=0)
+
+    elif template == "badge":  # Emblem with ribbon
+        canvas.alpha_composite(_logo_radial((W, H), [(0, (22, 58, 46)), (1, (4, 14, 11))]))
+        R = int(H * 0.40)
+        gold = [(0, (255, 232, 160)), (0.5, (190, 140, 50)), (1, (255, 215, 120))]
+        disc = Image.new("L", (R * 2, R * 2), 0)
+        ImageDraw.Draw(disc).ellipse((0, 0, R * 2 - 1, R * 2 - 1), fill=255)
+        _logo_glow(canvas, disc, cx - R, cy - R + int(20 * u), (0, 0, 0), 30 * u, 1.2)
+        _logo_place(canvas, _logo_fill(disc, _logo_linear(disc.size, gold, 60)), cx - R, cy - R)
+        inner = Image.new("L", (R * 2, R * 2), 0)
+        di = ImageDraw.Draw(inner)
+        e = int(R * 0.09)
+        di.ellipse((e, e, R * 2 - e, R * 2 - e), fill=255)
+        _logo_place(canvas, _logo_fill(inner, _logo_radial(inner.size, [(0, (26, 74, 58)), (1, (10, 34, 27))])), cx - R, cy - R)
+        d = ImageDraw.Draw(canvas)
+        r2 = R - e - 22 * u
+        d.ellipse((cx - r2, cy - r2, cx + r2, cy + r2), outline=(214, 172, 86), width=int(3 * u))
+        for i in range(72):
+            a = i / 72 * math.tau
+            px, py = cx + math.cos(a) * (r2 - 20 * u), cy + math.sin(a) * (r2 - 20 * u)
+            d.ellipse((px - 3 * u, py - 3 * u, px + 3 * u, py + 3 * u), fill=(214, 172, 86))
+        for k, off in enumerate((-110, 0, 110)):
+            _logo_sparkle(d, cx + off * u, cy - R * 0.52 - (12 * u if off == 0 else 0), (30 if off == 0 else 22) * u, (240, 205, 120))
+        rh = int(H * 0.19)
+        rw = int(R * 2.5)
+        rx0, ry0 = cx - rw // 2, cy - rh // 2
+        notch = int(rh * 0.35)
+        for side in (-1, 1):
+            ex = cx + side * rw // 2
+            tail = [(ex, ry0 + 30 * u), (ex + side * 150 * u, ry0 + 30 * u), (ex + side * (150 * u - notch), ry0 + 30 * u + rh / 2),
+                    (ex + side * 150 * u, ry0 + 30 * u + rh), (ex, ry0 + 30 * u + rh)]
+            d.polygon(tail, fill=(120, 18, 30))
+        rib = Image.new("L", (rw, rh), 255)
+        _logo_glow(canvas, rib, rx0, ry0 + int(10 * u), (0, 0, 0), 16 * u, 1.0)
+        _logo_place(canvas, _logo_fill(rib, _logo_linear((rw, rh), [(0, (200, 40, 52)), (1, (140, 20, 34))], 90)), rx0, ry0)
+        d = ImageDraw.Draw(canvas)
+        d.rectangle((rx0, ry0 + 10 * u, rx0 + rw, ry0 + 14 * u), fill=(240, 200, 110))
+        d.rectangle((rx0, ry0 + rh - 14 * u, rx0 + rw, ry0 + rh - 10 * u), fill=(240, 200, 110))
+        fm, om, _ = fit_title("bebas", None, rw * 0.86, rh * 0.62, tracking=0.06)
+        _logo_glow(canvas, fm, cx - fm.width // 2 + int(4 * u), cy - fm.height // 2 + int(6 * u), (60, 0, 10), 6 * u, 1.3)
+        _logo_place(canvas, _logo_fill(fm, _logo_linear(fm.size, [(0, (255, 250, 230)), (1, (245, 215, 150))], 90)), cx - fm.width // 2, cy - fm.height // 2)
+        sm = fit_sub("montserrat", 700, R * 1.2, 34 * u, 0.35)
+        if sm:
+            _logo_place(canvas, _logo_fill(sm, (236, 200, 120)), cx - sm.width // 2, cy + R * 0.42)
+        _logo_finish(canvas, rng, grain=8, vignette=130)
+
+    elif template == "shadow":  # Flat long shadow
+        canvas.alpha_composite(_logo_linear((W, H), [(0, (255, 138, 60)), (1, (240, 52, 110))], 35))
+        fm, om, _ = fit_title("anton", None, W * 0.74, H * 0.36, tracking=0.02)
+        tx, ty = cx - fm.width // 2, int(cy - fm.height * 0.62)
+        L = int(520 * u)
+        shm = Image.new("L", (fm.width + L, fm.height + L), 0)
+        step = max(1, int(2 * u))
+        for i in range(0, L, step):
+            shm.paste(255, (i, i), fm)
+        fade = _logo_linear(shm.size, [(0, (255, 255, 255)), (0.75, (0, 0, 0))], 45).getchannel("R")
+        shm = ImageChops.multiply(shm, fade)
+        _logo_place(canvas, _logo_fill(shm, (120, 10, 40, 150)), tx, ty)
+        _logo_place(canvas, _logo_fill(fm, (255, 255, 255)), tx, ty)
+        sm = fit_sub("montserrat", 800, W * 0.55, 40 * u, 0.4)
+        if sm:
+            pw, ph = sm.width + 90 * u, sm.height + 50 * u
+            px, py = cx - pw / 2, ty + fm.height + 70 * u
+            ImageDraw.Draw(canvas).rounded_rectangle((px, py, px + pw, py + ph), radius=int(ph / 2), fill=(255, 255, 255))
+            _logo_place(canvas, _logo_fill(sm, (235, 60, 95)), cx - sm.width // 2, py + (ph - sm.height) / 2)
+        _logo_finish(canvas, rng, grain=7, vignette=70)
+
+    elif template == "gradient":  # Aurora glass card
+        canvas.alpha_composite(Image.new("RGBA", (W, H), (12, 10, 30, 255)))
+        canvas.alpha_composite(_logo_blobs((W, H), [
+            (2.0, 2.2, 2.2, (120, 60, 255, 255)), (6.2, 1.6, 2.0, (255, 70, 170, 255)),
+            (5.4, 6.4, 2.3, (255, 150, 60, 230)), (1.4, 6.6, 1.9, (40, 180, 255, 240)),
+            (4.0, 4.0, 1.4, (190, 90, 255, 200))], 22))
+        fm, om, _ = fit_title("poppins", None, W * 0.66, H * 0.24)
+        sm = fit_sub("montserrat", 600, W * 0.5, 36 * u, 0.38)
+        cw = int(max(fm.width, sm.width if sm else 0) + 220 * u)
+        ch = int(fm.height + (sm.height + 50 * u if sm else 0) + 200 * u)
+        card = Image.new("L", (cw, ch), 0)
+        ImageDraw.Draw(card).rounded_rectangle((0, 0, cw - 1, ch - 1), radius=int(60 * u), fill=255)
+        kx, ky = cx - cw // 2, cy - ch // 2
+        _logo_glow(canvas, card, kx, ky + int(30 * u), (0, 0, 0), 40 * u, 0.8)
+        blurred = canvas.crop((kx, ky, kx + cw, ky + ch)).filter(ImageFilter.GaussianBlur(30 * u))
+        blurred.putalpha(card)
+        _logo_place(canvas, blurred, kx, ky)
+        _logo_place(canvas, _logo_fill(card, (255, 255, 255, 34)), kx, ky)
+        ImageDraw.Draw(canvas).rounded_rectangle((kx, ky, kx + cw, ky + ch), radius=int(60 * u), outline=(255, 255, 255, 110), width=int(3 * u))
+        tx, ty = cx - fm.width // 2, ky + int(100 * u)
+        _logo_glow(canvas, fm, tx, ty + int(10 * u), (20, 0, 60), 18 * u, 0.9)
+        _logo_place(canvas, _logo_fill(fm, _logo_linear(fm.size, [(0, (255, 255, 255)), (1, (225, 215, 255))], 90)), tx, ty)
+        if sm:
+            _logo_place(canvas, _logo_fill(sm, (255, 255, 255, 215)), cx - sm.width // 2, ty + fm.height + 50 * u)
+        _logo_finish(canvas, rng, grain=10, vignette=90)
+
+    elif template == "outline":  # Cyber HUD outline
+        canvas.alpha_composite(_logo_radial((W, H), [(0, (16, 22, 34)), (1, (4, 6, 10))]))
+        d = ImageDraw.Draw(canvas)
+        for i in range(-H, W, int(36 * u)):
+            d.line((i, 0, i + H, H), fill=(255, 255, 255, 8), width=1)
+        fm, om, size = fit_title("orbitron", 900, W * 0.76, H * 0.24, tracking=0.05, stroke=0.035)
+        ring = ImageChops.subtract(om, fm)
+        tx, ty = cx - om.width // 2, int(cy - om.height * 0.6)
+        for dx, col in ((-14, (255, 40, 120, 110)), (14, (0, 220, 255, 110))):
+            _logo_place(canvas, _logo_fill(ring, col), tx + dx * u, ty)
+        grad = _logo_linear(om.size, [(0, (0, 240, 255)), (0.5, (140, 110, 255)), (1, (255, 60, 200))], 0)
+        _logo_glow(canvas, ring, tx, ty, (80, 160, 255), 18 * u, 1.3)
+        _logo_place(canvas, _logo_fill(fm, (10, 14, 22, 235)), tx, ty)
+        _logo_place(canvas, _logo_fill(ring, grad), tx, ty)
+        m, bl = 110 * u, 90 * u
+        d = ImageDraw.Draw(canvas)
+        for (x0, y0, sx, sy) in ((m, m, 1, 1), (W - m, m, -1, 1), (m, H - m, 1, -1), (W - m, H - m, -1, -1)):
+            d.line((x0, y0, x0 + sx * bl, y0), fill=(0, 230, 255), width=int(5 * u))
+            d.line((x0, y0, x0, y0 + sy * bl), fill=(0, 230, 255), width=int(5 * u))
+        sm = fit_sub("jetbrains", 700, W * 0.55, 38 * u, 0.3)
+        if sm:
+            _logo_place(canvas, _logo_fill(sm, (120, 230, 255)), cx - sm.width // 2, ty + om.height + 70 * u)
+        _logo_finish(canvas, rng, grain=8, vignette=140)
+
+    elif template == "split":  # Diagonal duotone
+        A, B = (18, 22, 38), (255, 200, 0)
+        canvas.alpha_composite(Image.new("RGBA", (W, H), A + (255,)))
+        right = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(right).polygon([(W * 0.56, 0), (W, 0), (W, H), (W * 0.44, H)], fill=255)
+        _logo_place(canvas, _logo_fill(right, B), 0, 0)
+        fm, om, _ = fit_title("anton", None, W * 0.8, H * 0.38, tracking=0.03)
+        tx, ty = cx - fm.width // 2, int(cy - fm.height * 0.6)
+
+        def duo(mask, x, y):
+            full = Image.new("L", (W, H), 0)
+            full.paste(mask, (int(x), int(y)))
+            _logo_place(canvas, _logo_fill(ImageChops.multiply(full, ImageChops.invert(right)), B), 0, 0)
+            _logo_place(canvas, _logo_fill(ImageChops.multiply(full, right), A), 0, 0)
+
+        duo(fm, tx, ty)
+        sm = fit_sub("montserrat", 800, W * 0.6, 40 * u, 0.5)
+        if sm:
+            duo(sm, cx - sm.width // 2, ty + fm.height + 60 * u)
+        _logo_finish(canvas, rng, grain=7, vignette=60)
+
+    elif template == "glow":  # Molten gold + reflection
+        canvas.alpha_composite(_logo_radial((W, H), [(0, (70, 24, 4)), (0.6, (18, 6, 2)), (1, (4, 2, 1))], (cx, H * 0.72), int(H)))
+        emb = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        e = ImageDraw.Draw(emb)
+        for _ in range(140):
+            x, y, r = rng.uniform(0, W), rng.uniform(H * 0.1, H), rng.uniform(1.5, 6) * u
+            e.ellipse((x - r, y - r, x + r, y + r), fill=(255, rng.randint(120, 200), 40, rng.randint(60, 200)))
+        canvas.alpha_composite(emb.filter(ImageFilter.GaussianBlur(1.5 * u)))
+        fm, om, _ = fit_title("playfair", 900, W * 0.76, H * 0.27)
+        tx, ty = cx - fm.width // 2, int(H * 0.42 - fm.height / 2)
+        fire = [(0, (255, 252, 225)), (0.45, (255, 200, 80)), (0.8, (240, 110, 20)), (1, (190, 60, 10))]
+        _logo_glow(canvas, fm, tx, ty, (255, 120, 20), 60 * u, 0.9)
+        _logo_glow(canvas, fm, tx, ty, (255, 190, 80), 14 * u, 1.2)
+        _logo_place(canvas, _logo_fill(fm, _logo_linear(fm.size, fire, 90)), tx, ty)
+        refl = _logo_fill(fm.transpose(Image.FLIP_TOP_BOTTOM), _logo_linear(fm.size, fire[::-1], 90))
+        refl.putalpha(ImageChops.multiply(refl.getchannel("A"), _logo_linear(fm.size, [(0, (90, 90, 90)), (0.6, (0, 0, 0))], 90).getchannel("R")))
+        _logo_place(canvas, refl.filter(ImageFilter.GaussianBlur(2 * u)), tx, ty + fm.height + 14 * u)
+        sm = fit_sub("montserrat", 600, W * 0.55, 38 * u, 0.45)
+        if sm:
+            _logo_place(canvas, _logo_fill(sm, (255, 214, 150)), cx - sm.width // 2, H * 0.84)
+        _logo_finish(canvas, rng, grain=9, vignette=150)
+
+    elif template == "terminal":  # Hacker terminal window
+        canvas.alpha_composite(_logo_linear((W, H), [(0, (22, 26, 38)), (1, (8, 10, 16))], 70))
+        ww, wh = int(W * 0.8), int(H * 0.66)
+        wx, wy = cx - ww // 2, cy - wh // 2
+        win = Image.new("L", (ww, wh), 0)
+        ImageDraw.Draw(win).rounded_rectangle((0, 0, ww - 1, wh - 1), radius=int(28 * u), fill=255)
+        _logo_glow(canvas, win, wx, wy + int(30 * u), (0, 0, 0), 40 * u, 1.2)
+        _logo_place(canvas, _logo_fill(win, (24, 27, 36)), wx, wy)
+        bar = int(74 * u)
+        d = ImageDraw.Draw(canvas)
+        d.rounded_rectangle((wx, wy, wx + ww, wy + bar), radius=int(28 * u), fill=(40, 44, 58))
+        d.rectangle((wx, wy + bar - 28 * u, wx + ww, wy + bar), fill=(40, 44, 58))
+        for i, col in enumerate(((255, 95, 86), (255, 189, 46), (39, 201, 63))):
+            bx = wx + 50 * u + i * 44 * u
+            d.ellipse((bx - 13 * u, wy + bar / 2 - 13 * u, bx + 13 * u, wy + bar / 2 + 13 * u), fill=col)
+        tb = _logo_fit("~/brand — zsh", "jetbrains", 500, ww * 0.4, 26 * u)[0]
+        _logo_place(canvas, _logo_fill(tb, (150, 155, 175)), cx - tb.width // 2, wy + (bar - tb.height) / 2)
+        pm = _logo_fit("$ ./logo --render", "jetbrains", 600, ww * 0.6, 34 * u)[0]
+        _logo_place(canvas, _logo_fill(pm, (120, 130, 150)), wx + 70 * u, wy + bar + 60 * u)
+        fm, om, size = fit_title("jetbrains", 800, ww * 0.74, wh * 0.28)
+        tx, ty = wx + int(70 * u), int(wy + bar + (wh - bar) / 2 - fm.height / 2 + 10 * u)
+        _logo_glow(canvas, fm, tx, ty, (60, 255, 120), 22 * u, 1.1)
+        _logo_place(canvas, _logo_fill(fm, (90, 255, 140)), tx, ty)
+        d = ImageDraw.Draw(canvas)
+        cxr = tx + fm.width + 26 * u
+        d.rectangle((cxr, ty, cxr + fm.height * 0.5, ty + fm.height), fill=(90, 255, 140))
+        if subtitle:
+            sm = _logo_fit(("// " + subtitle) if not sub_rtl else subtitle, "vazir" if sub_rtl else "jetbrains", 500, ww * 0.8, 36 * u)[0]
+            _logo_place(canvas, _logo_fill(sm, (110, 120, 140)), wx + 70 * u, ty + fm.height + 60 * u)
+        scan = Image.new("RGBA", (ww, wh), (0, 0, 0, 0))
+        s = ImageDraw.Draw(scan)
+        for y in range(0, wh, max(2, int(5 * u))):
+            s.line((0, y, ww, y), fill=(0, 0, 0, 40))
+        scan.putalpha(ImageChops.multiply(scan.getchannel("A"), win))
+        _logo_place(canvas, scan, wx, wy)
+        _logo_finish(canvas, rng, grain=7, vignette=120)
+
+    elif template == "stamp":  # Distressed rubber stamp
+        canvas.alpha_composite(_logo_radial((W, H), [(0, (240, 233, 214)), (1, (214, 202, 176))]))
+        sw, shh = int(W * 0.74), int(H * 0.56)
+        st = Image.new("L", (sw, shh), 0)
+        d = ImageDraw.Draw(st)
+        d.rounded_rectangle((0, 0, sw - 1, shh - 1), radius=int(30 * u), outline=255, width=int(16 * u))
+        d.rounded_rectangle((34 * u, 34 * u, sw - 34 * u, shh - 34 * u), radius=int(18 * u), outline=255, width=int(5 * u))
+        fm, om, _ = fit_title("blackops", None, sw * 0.8, shh * 0.42, tracking=0.03)
+        fy = int(shh * 0.44 - fm.height / 2)
+        st.paste(255, ((sw - fm.width) // 2, fy), fm)
+        ly = fy + fm.height + 40 * u
+        d.line((80 * u, ly, sw - 80 * u, ly), fill=255, width=int(5 * u))
+        sub = subtitle or "★ ★ ★ ★ ★"
+        sm = _logo_fit(sub if sub_rtl or not subtitle else sub.upper(), "vazir" if sub_rtl else ("montserrat" if subtitle else "fallback"), 800, sw * 0.7, 46 * u, 0 if sub_rtl else 0.3)[0]
+        st.paste(255, ((sw - sm.width) // 2, int(ly + 30 * u)), sm)
+        wear = Image.effect_noise((sw // 3, shh // 3), 90).resize((sw, shh)).filter(ImageFilter.GaussianBlur(1.2 * u))
+        wear = wear.point(lambda v: 0 if v < 70 else (255 if v > 110 else (v - 70) * 6))
+        st = ImageChops.multiply(st, wear)
+        layer = _logo_fill(st, (184, 28, 40, 230)).rotate(-7, resample=Image.BICUBIC, expand=True)
+        _logo_place(canvas, layer, cx - layer.width // 2, cy - layer.height // 2)
+        _logo_finish(canvas, rng, grain=16, vignette=90)
+
+    else:  # diamond — luxury chrome
+        canvas.alpha_composite(_logo_radial((W, H), [(0, (34, 34, 42)), (0.7, (8, 8, 12)), (1, (0, 0, 0))]))
+        gy, gs = int(H * 0.25), int(H * 0.13)
+        gem = [(cx - gs, gy), (cx - gs * 0.55, gy - gs * 0.55), (cx + gs * 0.55, gy - gs * 0.55), (cx + gs, gy), (cx, gy + gs * 1.1)]
+        facets = [
+            ([(cx - gs, gy), (cx - gs * 0.55, gy - gs * 0.55), (cx - gs * 0.2, gy)], (200, 225, 255)),
+            ([(cx - gs * 0.55, gy - gs * 0.55), (cx + gs * 0.55, gy - gs * 0.55), (cx, gy)], (245, 250, 255)),
+            ([(cx + gs, gy), (cx + gs * 0.55, gy - gs * 0.55), (cx + gs * 0.2, gy)], (150, 180, 220)),
+            ([(cx - gs, gy), (cx, gy + gs * 1.1), (cx - gs * 0.2, gy)], (120, 160, 210)),
+            ([(cx - gs * 0.2, gy), (cx + gs * 0.2, gy), (cx, gy + gs * 1.1)], (210, 230, 255)),
+            ([(cx + gs, gy), (cx, gy + gs * 1.1), (cx + gs * 0.2, gy)], (80, 110, 160)),
+            ([(cx - gs * 0.2, gy), (cx - gs * 0.55, gy - gs * 0.55), (cx, gy)], (170, 200, 240)),
+            ([(cx + gs * 0.2, gy), (cx + gs * 0.55, gy - gs * 0.55), (cx, gy)], (230, 240, 255)),
+        ]
+        gm = Image.new("L", (W, H), 0)
+        ImageDraw.Draw(gm).polygon(gem, fill=255)
+        _logo_glow(canvas, gm.crop(gm.getbbox()), int(cx - gs), int(gy - gs * 0.55), (140, 190, 255), 40 * u, 0.9)
+        d = ImageDraw.Draw(canvas)
+        for poly, col in facets:
+            d.polygon(poly, fill=col)
+        d.line(gem + [gem[0]], fill=(255, 255, 255), width=int(3 * u))
+        chrome = [(0, (255, 255, 255)), (0.42, (178, 192, 212)), (0.5, (70, 78, 96)), (0.62, (205, 216, 232)), (1, (250, 252, 255))]
+        fm, om, _ = fit_title("cinzel", 900, W * 0.76, H * 0.22, tracking=0.03, stroke=0.012)
+        tx, ty = cx - om.width // 2, int(H * 0.55 - om.height / 2)
+        _logo_glow(canvas, om, tx, ty + int(10 * u), (0, 0, 0), 12 * u, 1.3)
+        _logo_place(canvas, _logo_fill(ImageChops.subtract(om, fm), (255, 255, 255, 180)), tx, ty)
+        _logo_place(canvas, _logo_fill(fm, _logo_linear(fm.size, chrome, 90)), tx + (om.width - fm.width) // 2, ty + (om.height - fm.height) // 2)
+        d = ImageDraw.Draw(canvas)
+        for _ in range(9):
+            x = rng.uniform(tx, tx + om.width)
+            y = rng.uniform(ty - 20 * u, ty + om.height * 0.5)
+            _logo_sparkle(d, x, y, rng.uniform(10, 26) * u, (255, 255, 255, 230))
+        _logo_sparkle(d, cx + gs * 0.6, gy - gs * 0.5, 34 * u, (255, 255, 255))
+        ly = ty + om.height + 60 * u
+        sm = fit_sub("montserrat", 500, W * 0.55, 36 * u, 0.55)
+        half = (sm.width / 2 + 50 * u) if sm else 20 * u
+        d.line((cx - half - 240 * u, ly + 18 * u, cx - half, ly + 18 * u), fill=(170, 180, 200), width=int(2 * u))
+        d.line((cx + half, ly + 18 * u, cx + half + 240 * u, ly + 18 * u), fill=(170, 180, 200), width=int(2 * u))
+        if sm:
+            _logo_place(canvas, _logo_fill(sm, (205, 212, 226)), cx - sm.width // 2, ly + 18 * u - sm.height / 2)
+        _logo_finish(canvas, rng, grain=8, vignette=160)
+
+    final = canvas.convert("RGB").resize((_LOGO_OUT_W, _LOGO_OUT_H), Image.LANCZOS)
     output = BytesIO()
-    canvas.save(output, format="PNG")
+    final.save(output, format="JPEG", quality=95, subsampling=0, optimize=True)
     return output.getvalue()
 
 async def generate_logo(template_id: int, text: str):
@@ -9747,9 +10193,9 @@ async def _self_logo_command(event, uid, text):
         caption = (
             "🎨 <b>Logo Generator</b>\n\n"
             f"✦ <b>متن:</b> {html.escape(logo_text)}\n"
-            f"✦ <b>طرح:</b> #{logo_id}"
+            f"✦ <b>طرح:</b> #{logo_id} • {LOGO_TEMPLATES[logo_id][1]}"
         )
-        await send_generated_image(event, media, caption, f"logo_{logo_id}.png")
+        await send_generated_image(event, media, caption, f"logo_{logo_id}.jpg")
         with contextlib.suppress(Exception):
             await event.delete()
     except ImportError:
@@ -10792,221 +11238,6 @@ async def _handle_premium_emoji_command(event, uid, text):
     return True
 
 
-# ============================================================
-# PREMIUM-EMOJI CHANNEL PUBLISHING
-#   .ثبت کانال @channel            -> SELF adds the main bot to the channel as
-#                                     admin (post messages) and registers it
-#   .انتشار در چنل @channel [متن]  -> the BOT posts the text (reply to a
-#                                     message, or text after the username) in
-#                                     that channel, with premium emojis
-# ============================================================
-_PEC_USERNAME = r"@?([A-Za-z][A-Za-z0-9_]{3,31})"
-_PEC_REGISTER_RE = re.compile(r"^ثبت\s*(?:کانال|چنل)\s+" + _PEC_USERNAME + r"\s*$")
-_PEC_PUBLISH_RE = re.compile(
-    r"^انتشار\s+(?:در|به)\s+(?:چنل|کانال)\s+" + _PEC_USERNAME + r"(?:\s+(.+))?$", re.DOTALL
-)
-_PEC_USAGE_RE = re.compile(r"^انتشار\s+(?:در|به)\s+(?:چنل|کانال)\s*$")
-
-
-def _pec_build_entities(text, entities, mapping):
-    """Keep the source message's entities and add a custom-emoji entity for
-    every registered normal emoji found in the text (UTF-16 offsets)."""
-    wide = utils.add_surrogate(text or "")
-    result = list(entities or [])
-    taken = [
-        (e.offset, e.offset + e.length)
-        for e in result
-        if isinstance(e, types.MessageEntityCustomEmoji)
-    ]
-    for key in sorted(mapping.keys(), key=len, reverse=True):
-        entry = mapping.get(key)
-        if not key or not isinstance(entry, (list, tuple)) or len(entry) < 2:
-            continue
-        try:
-            emoji_id = int(entry[0])
-        except (TypeError, ValueError):
-            continue
-        wkey = utils.add_surrogate(key)
-        start = 0
-        while True:
-            i = wide.find(wkey, start)
-            if i < 0:
-                break
-            j = i + len(wkey)
-            if not any(i < b and a < j for a, b in taken):
-                result.append(types.MessageEntityCustomEmoji(
-                    offset=i, length=len(wkey), document_id=emoji_id,
-                ))
-                taken.append((i, j))
-            start = j
-    result.sort(key=lambda e: e.offset)
-    return result
-
-
-async def _pec_register(event, uid, username):
-    client = event.client
-    try:
-        entity = await client.get_entity(username)
-    except Exception:
-        await event.edit(f"❌ کانال @{html.escape(username)} پیدا نشد.", parse_mode="html")
-        return
-    if not isinstance(entity, types.Channel) or not getattr(entity, "broadcast", False):
-        await event.edit("❌ فقط کانال (Channel) عمومی قابل ثبت است.", parse_mode="html")
-        return
-    if not getattr(entity, "username", None):
-        await event.edit("❌ کانال باید یوزرنیم عمومی داشته باشد.", parse_mode="html")
-        return
-
-    channels = self_premium_channels(uid)
-    known = next((c for c in channels if c["username"].lower() == entity.username.lower()), None)
-    if known is None and len(channels) >= PREMIUM_CHANNELS_MAX:
-        await event.edit(f"❌ حداکثر {PREMIUM_CHANNELS_MAX} کانال قابل ثبت است.", parse_mode="html")
-        return
-
-    # SELF (the session on this account) makes the main bot an admin so the
-    # bot itself can post into the channel.
-    try:
-        bot_entity = await _get_inline_bot_entity(client)
-        await client.edit_admin(
-            entity, bot_entity, is_admin=True,
-            post_messages=True, edit_messages=True, title="HTX",
-        )
-    except Exception as exc:
-        print(f"[PEC {uid}] add bot as admin failed: {type(exc).__name__}: {exc!r}")
-        await event.edit(
-            "❌ ربات داخل کانال ادمین نشد.\n"
-            "مطمئن شو اکانتت مالک یا ادمین کانال است و اجازه «افزودن ادمین» دارد.\n"
-            f"<code>{html.escape(type(exc).__name__)}</code>",
-            parse_mode="html",
-        )
-        return
-
-    try:
-        await bot.get_entity(entity.username)
-    except Exception as exc:
-        print(f"[PEC {uid}] bot cannot resolve channel: {type(exc).__name__}: {exc!r}")
-        await event.edit(
-            "❌ ربات ادمین شد ولی به کانال دسترسی پیدا نکرد. کمی بعد دوباره امتحان کن.",
-            parse_mode="html",
-        )
-        return
-
-    record = {
-        "id": utils.get_peer_id(entity),
-        "username": entity.username,
-        "title": getattr(entity, "title", "") or "",
-    }
-    if known is not None:
-        channels[channels.index(known)] = record
-    else:
-        channels.append(record)
-    self_save_premium_channels(uid, channels)
-    await event.edit(
-        f"✅ کانال @{html.escape(entity.username)} برای ایموجی پریمیوم ثبت شد ✓ | HTX",
-        parse_mode="html",
-    )
-
-
-async def _pec_publish(event, uid, username, inline_text):
-    if self_get(uid, "premium_channel") != "on":
-        await event.edit(
-            "❌ انتشار در کانال خاموش است. از پنل > ایموجی پریمیوم روشنش کن.",
-            parse_mode="html",
-        )
-        return
-    entry = next(
-        (c for c in self_premium_channels(uid) if c["username"].lower() == username.lower()),
-        None,
-    )
-    if entry is None:
-        await event.edit(
-            f"❌ کانال @{html.escape(username)} ثبت نشده.\n"
-            f"اول بزن: <code>.ثبت کانال @{html.escape(username)}</code>",
-            parse_mode="html",
-        )
-        return
-
-    text, entities = "", []
-    if event.is_reply:
-        replied = await event.get_reply_message()
-        if replied and (replied.raw_text or "").strip():
-            text = replied.raw_text
-            entities = list(replied.entities or [])
-    if not text.strip() and inline_text:
-        text = inline_text.strip()
-    if not text.strip():
-        await event.edit(
-            "❌ متنی برای انتشار نیست. روی یک پیام ریپلای کن یا بعد از یوزرنیم متن بنویس.",
-            parse_mode="html",
-        )
-        return
-
-    with_premium = _pec_build_entities(text, entities, self_premium_emoji_map(uid))
-    try:
-        target = await bot.get_entity(entry["username"])
-    except Exception as exc:
-        print(f"[PEC {uid}] resolve failed: {type(exc).__name__}: {exc!r}")
-        await event.edit("❌ ربات به کانال دسترسی ندارد؛ دوباره «ثبت کانال» را بزن.", parse_mode="html")
-        return
-
-    plain = False
-    try:
-        await bot.send_message(
-            target, text, formatting_entities=with_premium or None,
-            parse_mode=None, link_preview=False,
-        )
-    except Exception as exc:
-        print(f"[PEC {uid}] send with premium emoji failed: {type(exc).__name__}: {exc!r}")
-        plain_entities = [e for e in with_premium if not isinstance(e, types.MessageEntityCustomEmoji)]
-        try:
-            await bot.send_message(
-                target, text, formatting_entities=plain_entities or None,
-                parse_mode=None, link_preview=False,
-            )
-            plain = True
-        except Exception as exc2:
-            print(f"[PEC {uid}] plain send failed: {type(exc2).__name__}: {exc2!r}")
-            await event.edit(
-                "❌ انتشار انجام نشد. مطمئن شو ربات هنوز ادمین کانال است.\n"
-                f"<code>{html.escape(type(exc2).__name__)}</code>",
-                parse_mode="html",
-            )
-            return
-
-    note = "\n⚠️ تلگرام ایموجی پریمیوم را نپذیرفت؛ متن با ایموجی عادی رفت." if plain else ""
-    await event.edit(f"✅ در @{html.escape(entry['username'])} منتشر شد.{note}", parse_mode="html")
-
-
-async def _handle_premium_channel_command(event, uid, text):
-    norm = _strip_invisible_marks(text).strip()
-    m_reg = _PEC_REGISTER_RE.match(norm)
-    m_pub = None if m_reg else _PEC_PUBLISH_RE.match(norm)
-    m_usage = None if (m_reg or m_pub) else _PEC_USAGE_RE.match(norm)
-    if not (m_reg or m_pub or m_usage):
-        return False
-
-    if not (event.is_private and event.chat_id == uid):
-        await event.edit("❌ این دستور فقط داخل Saved Messages خودت کار می‌کند.", parse_mode="html")
-        return True
-    if m_usage:
-        await event.edit(
-            "❌ فرمت درست:\n<code>.انتشار در چنل @channel</code>\n"
-            "روی پیام ریپلای کن یا بعد از یوزرنیم متن بنویس.",
-            parse_mode="html",
-        )
-        return True
-    try:
-        if m_reg:
-            await _pec_register(event, uid, m_reg.group(1))
-        else:
-            await _pec_publish(event, uid, m_pub.group(1), m_pub.group(2))
-    except Exception as exc:
-        print(f"[PEC {uid}] command failed: {type(exc).__name__}: {exc!r}")
-        with contextlib.suppress(Exception):
-            await event.edit(f"❌ خطا: <code>{html.escape(type(exc).__name__)}</code>", parse_mode="html")
-    return True
-
-
 _SNOOPERS_COMMAND_RE = re.compile(r"^\s*لیست\s*فضول\s*ها$")
 
 
@@ -11413,8 +11644,6 @@ async def _self_run_commands(event, uid, orig, text, low):
         return True
     if await _handle_group_command(event, uid, text):
         return True
-    if await _handle_premium_channel_command(event, uid, text):
-        return True
     if await _handle_premium_emoji_command(event, uid, text):
         return True
     if await _handle_snoopers_command(event, uid, text):
@@ -11585,6 +11814,7 @@ async def _self_run_commands(event, uid, orig, text, low):
                         await asyncio.sleep(0.35)
             if last_exc is not None:
                 raise last_exc
+            await asyncio.sleep(HTX_PANEL_CMD_DELETE_DELAY)
             with contextlib.suppress(Exception):
                 await event.delete()
         except Exception:
