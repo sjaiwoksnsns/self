@@ -4975,7 +4975,10 @@ async def _get_inline_bot_entity(client):
 # since it's the one that inserted it).
 _LAST_PANEL_MSG = {}
 
-HTX_PANEL_CLOSE_DELETE_DELAY = 0.5  # «بستن» removes the card after 0.5s
+# «بستن»: first the buttons vanish at once (photo + caption stay), then after
+# this short beat the whole card is deleted -- so the keyboard never hangs
+# under the photo while the card is waiting to be removed.
+HTX_PANEL_CLOSE_DELETE_DELAY = 0.5  # pause between "buttons gone" and "card deleted"
 HTX_PANEL_CMD_DELETE_DELAY = 0.5    # «.پنل» command message is removed 0.5s after the card lands
 
 
@@ -4991,6 +4994,28 @@ async def _delete_closed_panel(uid, peer, message_id, delay=HTX_PANEL_CLOSE_DELE
         return False
     try:
         await client.delete_messages(peer, [message_id])
+        return True
+    except Exception:
+        return False
+
+
+async def _htx_strip_panel_buttons(event, uid):
+    """Remove ONLY the inline buttons of the panel card, instantly. The photo
+    and its caption are left exactly as they are. Returns True when the
+    keyboard is gone."""
+    try:
+        await event.edit(buttons=None)
+        return True
+    except MessageNotModifiedError:
+        return True
+    except Exception:
+        pass
+    # Fallback: some Telethon/Telegram combos refuse a markup-only edit, so
+    # re-send the caption with no buttons.
+    try:
+        await event.edit(premium_ui_text(self_panel_text(uid)), parse_mode="html", buttons=None)
+        return True
+    except MessageNotModifiedError:
         return True
     except Exception:
         return False
@@ -6392,22 +6417,20 @@ async def handle_self_panel_callback(event):
     if action == "close":
         _first_comment_channel_sessions.pop(int(uid), None)
         last_panel = _LAST_PANEL_MSG.pop(int(uid), None)
-        # Popup answer fires immediately; the card is deleted after
-        # HTX_PANEL_CLOSE_DELETE_DELAY (0.5s).
+        # Step 1 (instant): popup + strip the buttons, photo stays on screen.
+        strip_results = await asyncio.gather(
+            safe_answer(event, "پنل با موفقیت بسته شد."),
+            _htx_strip_panel_buttons(event, uid),
+            return_exceptions=True,
+        )
+        buttons_removed = strip_results[1] is True
+        # Step 2 (after a short beat): delete the now button-less card.
         deleted = False
         if last_panel:
             peer, message_id = last_panel
-            results = await asyncio.gather(
-                safe_answer(event, "پنل با موفقیت بسته شد."),
-                _delete_closed_panel(uid, peer, message_id, delay=HTX_PANEL_CLOSE_DELETE_DELAY),
-                return_exceptions=True,
-            )
-            deleted = results[1] is True
-        else:
-            with contextlib.suppress(Exception):
-                await safe_answer(event, "پنل با موفقیت بسته شد.")
-        if not deleted:
-            # Fallback only: the card could not be deleted, so at least strip its buttons.
+            deleted = await _delete_closed_panel(uid, peer, message_id, delay=HTX_PANEL_CLOSE_DELETE_DELAY) is True
+        if not deleted and not buttons_removed:
+            # Last resort: nothing worked, at least try once more to strip the buttons.
             with contextlib.suppress(Exception):
                 await safe_callback_edit(event, self_panel_text(uid), parse_mode="html", buttons=None)
         return True
@@ -15574,6 +15597,26 @@ async def group_commands(event):
         return
 
 
+async def _delete_expired_game_message(chat_id, message_id):
+    """An expired / dead game card must disappear completely. Try a real
+    delete (twice), and only if Telegram refuses both times fall back to
+    stripping the buttons so the card can never be clicked again."""
+    for attempt in range(2):
+        try:
+            await bot.delete_messages(chat_id, message_id)
+            return True
+        except Exception as exc:
+            print(f"[GAME] expired card delete failed ({attempt + 1}/2): {type(exc).__name__}: {exc}")
+            await asyncio.sleep(0.6)
+    with contextlib.suppress(Exception):
+        await bot.edit_message(
+            chat_id, message_id,
+            premium_ui_text("⏰ این بازی منقضی شد."),
+            buttons=None, parse_mode="html",
+        )
+    return False
+
+
 async def game_timeout(chat_id, message_id, organizer_id, amount):
     await asyncio.sleep(GAME_TIMEOUT)
 
@@ -15585,8 +15628,7 @@ async def game_timeout(chat_id, message_id, organizer_id, amount):
 
     change_balance(organizer_id, amount)
 
-    with contextlib.suppress(Exception):
-        await bot.delete_messages(chat_id, message_id)
+    await _delete_expired_game_message(chat_id, message_id)
 
     with contextlib.suppress(Exception):
         await bot.send_message(
@@ -15608,8 +15650,7 @@ async def rps_join_timeout(chat_id, message_id, organizer_id, amount):
 
     change_balance(organizer_id, amount)
 
-    with contextlib.suppress(Exception):
-        await bot.delete_messages(chat_id, message_id)
+    await _delete_expired_game_message(chat_id, message_id)
 
     with contextlib.suppress(Exception):
         await bot.send_message(
@@ -15645,12 +15686,14 @@ async def rps_round_timeout(chat_id, message_id, round_no):
         if amount > 0:
             change_balance(p1, amount)
             change_balance(p2, amount)
-        with contextlib.suppress(Exception):
-            await bot.edit_message(
-                chat_id, message_id,
-                premium_ui_text("❌ بازی به دلیل عدم انتخاب به‌موقع لغو شد و مبلغ هر دو نفر برگشت داده شد."),
-                buttons=None, parse_mode="html"
-            )
+        await _delete_expired_game_message(chat_id, message_id)
+        for _uid in (p1, p2):
+            with contextlib.suppress(Exception):
+                await bot.send_message(
+                    int(_uid),
+                    premium_ui_text(f"❌ بازی سنگ‌کاغذقیچی به دلیل عدم انتخاب به‌موقع لغو شد.\n💎 {amount} الماس به حساب شما برگشت."),
+                    parse_mode="html",
+                )
         return
 
     # Exactly one player let the 30-second timer run out — they lose the match.
@@ -16240,6 +16283,7 @@ async def callbacks(event):
         game = active_games.get(key)
         if not game:
             await safe_answer(event, "❌ این بازی منقضی شده است.", True)
+            asyncio.create_task(_delete_expired_game_message(event.chat_id, event.message_id))
             return
 
         # Lock before the reveal delay so the same game cannot be joined twice.
@@ -16380,6 +16424,7 @@ async def callbacks(event):
         game = active_rps_games.get(key)
         if not game or game.get("phase") != "waiting_join":
             await safe_answer(event, "❌ این بازی منقضی شده یا قبلاً شروع شده است.", True)
+            asyncio.create_task(_delete_expired_game_message(event.chat_id, event.message_id))
             return
 
         if get_balance(joiner) < amount:
@@ -16479,6 +16524,7 @@ async def callbacks(event):
 
         if not game or game.get("phase") != "playing":
             await safe_answer(event, "❌ این بازی منقضی شده است.", True)
+            asyncio.create_task(_delete_expired_game_message(event.chat_id, event.message_id))
             return
 
         p1 = int(game["p1"])
