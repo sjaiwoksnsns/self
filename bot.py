@@ -2021,12 +2021,12 @@ PANEL_LABELS.update({
     "miowy_pishi": "🐱 پیشی خودکار", "miowy_mew": "😼 میو خودکار",
     "miowy_fishing": "🎣 ماهیگیری خودکار", "miowy_status": "😼 وضعیت میویی",
     "mozy_banana": "🍌 موز خودکار", "mozy_spin": "🎰 اسپین خودکار",
-    "mozy_monkey": "🐒 میمون",
+    "mozy_monkey": "🐒 میمون", "mozy_bank": "🏦 سود بانک",
     "mozy_status": "📢 وضعیت موزی",
 })
 PANEL_GROUPS = {
     "miowy_group": ("🐱 میویی", ["miowy_pishi", "miowy_mew", "miowy_fishing", "miowy_status"]),
-    "mozy_group": ("🍌 موزی", ["mozy_banana", "mozy_spin", "mozy_monkey", "mozy_status"]),
+    "mozy_group": ("🍌 موزی", ["mozy_banana", "mozy_spin", "mozy_monkey", "mozy_bank", "mozy_status"]),
 }
 
 # Items that already open a full dedicated screen elsewhere in this file —
@@ -2486,17 +2486,31 @@ PANEL_COMMAND_SCREENS = {
     ]),
     "mozy_status": ("وضعیت موزی", [
         "دستورات",
-        "<code>.وضعیت موزی</code>\nوضعیت موز، اسپین و درآمد میمون گروه",
+        "<code>.وضعیت موزی</code>\nوضعیت موز، اسپین، میمون و سود بانک گروه",
     ]),
     "mozy_banana": ("موز خودکار", [
         "دستورات • داخل گروه",
         "<code>.موز خودکار روشن</code>\n<code>.موز خودکار خاموش</code>\nهر ۳ دقیقه",
     ]),
     "mozy_monkey": ("میمون", [
-        "درآمد خودکار میمون • داخل گروه",
-        "<code>.درآمد میمون روشن</code>\n<code>.درآمد میمون خاموش</code>\n"
-        "هر ۱۲ ساعت داخل همان گپی که روشن شده «میمون» ارسال می‌شود و روی پیامی که ربات "
-        "در جواب (ریپلای) همان پیام می‌فرستد، دکمه «💰 برداشت همه» زده می‌شود.",
+        "دستورات • داخل گروه",
+        "<code>.درآمد میمون روشن</code>",
+        "<code>.درآمد میمون خاموش</code>",
+        "⏱ هر ۱۲ ساعت و ۵ ثانیه یک‌بار\n"
+        "🐒 «میمون» داخل همان گپ ارسال می‌شود\n"
+        "💰 روی جواب ربات، دکمه «برداشت همه» زده می‌شود\n"
+        "🔁 اگر ربات جواب ندهد، ۱۵ دقیقه بعد دوباره تلاش می‌کند\n"
+        "✅ ۱۲ ساعت بعدی از لحظه برداشت موفق حساب می‌شود",
+    ]),
+    "mozy_bank": ("سود بانک", [
+        "دستورات • داخل گروه",
+        "<code>.سود بانک روشن</code>",
+        "<code>.سود بانک خاموش</code>",
+        "⏱ هر ۲۴ ساعت و ۵ ثانیه یک‌بار\n"
+        "🏦 «بانک» داخل همان گپ ارسال می‌شود\n"
+        "🍌 دکمه «سود» و بعد دکمه «برداشت» زده می‌شود\n"
+        "🔁 اگر ربات جواب ندهد، ۱۵ دقیقه بعد دوباره تلاش می‌کند\n"
+        "✅ ۲۴ ساعت بعدی از لحظه برداشت موفق حساب می‌شود",
     ]),
     "mozy_spin": ("اسپین خودکار", [
         "دستورات • داخل گروه",
@@ -13035,22 +13049,27 @@ async def _presence_loop(client, uid):
 # ============================================================
 
 MOZY_CONFIG_KEY = "mozy_configs_v2"
-MOZY_FEATURES = ("banana", "spin", "monkey")
+MOZY_FEATURES = ("banana", "spin", "monkey", "bank")
 MOZY_COMMANDS = {
     "banana": "موز",
     "spin": "اسپین",
     "monkey": "میمون",
+    "bank": "بانک",
 }
 MOZY_DISPLAY = {
     "banana": "🍌 موز خودکار",
     "spin": "🎰 اسپین خودکار",
     "monkey": "🐒 درآمد میمون",
+    "bank": "🏦 سود بانک",
 }
 MOZY_DEFAULT_INTERVALS = {
     "banana": 185,   # 3 minutes + 5 seconds
     "spin": 21605,   # 6 hours + 5 seconds
     "monkey": 43205, # 12 hours + 5 seconds
+    "bank": 86405,   # 24 hours + 5 seconds
 }
+MOZY_CLAIM_FEATURES = ("monkey", "bank")
+MOZY_RETRY_DELAY = 900   # bot silent / claim failed -> try again in 15 minutes
 MOZY_MONKEY_BUTTON = "برداشت همه"
 MOZY_MONKEY_RESPONSE_WAIT = 30.0
 MOZY_BANANA_WORDS = ("موز", "مظ")
@@ -13292,7 +13311,112 @@ def _mozy_norm_label(text: str) -> str:
     value = value.replace("\u200c", " ").replace("\u200f", "").replace("\u200e", "")
     value = value.replace("ي", "ی").replace("ك", "ک")
     value = re.sub(r"[^\w\s]", " ", value)
+    value = re.sub(r"[A-Za-z_]+", " ", value)
     return " ".join(value.split())
+
+
+def _mozy_reply_to_id(message):
+    reply_to = getattr(message, "reply_to_msg_id", None)
+    if reply_to is None:
+        reply_to = getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None)
+    return int(reply_to or 0)
+
+
+def _mozy_labels(message):
+    return [_mozy_norm_label(getattr(b, "text", "") or "") for b in _mozy_iter_buttons(message)]
+
+
+def _mozy_find_button(message, label: str):
+    target = _mozy_norm_label(label)
+    for button in _mozy_iter_buttons(message):
+        if _mozy_norm_label(getattr(button, "text", "") or "") == target:
+            return button
+    return None
+
+
+async def _mozy_bot_replies(client, chat_id: int, trigger_id: int, me_id, extra_ids=()):
+    """Bot messages that reply to our trigger (plus freshly re-fetched extra ids)."""
+    found = {}
+    async for message in client.iter_messages(chat_id, min_id=int(trigger_id), limit=30):
+        if int(getattr(message, "id", 0) or 0) <= int(trigger_id):
+            continue
+        if me_id is not None and int(getattr(message, "sender_id", 0) or 0) == me_id:
+            continue
+        if _mozy_reply_to_id(message) != int(trigger_id):
+            continue
+        found[int(message.id)] = message
+    if extra_ids:
+        fresh = await client.get_messages(chat_id, ids=list(extra_ids))
+        for message in (fresh if isinstance(fresh, list) else [fresh]):
+            if message is not None:
+                found[int(message.id)] = message
+    return list(found.values())
+
+
+def _mozy_parse_wait(text: str):
+    """«وضعیت : 19 ساعت و 50 ثانیه دیگر» -> seconds, or None."""
+    value = _fa_digits(str(text or ""))
+    m = re.search(r"وضعیت[^\n]*?((?:\d+\s*(?:ساعت|دقیقه|ثانیه)[\s\S]{0,6}?){1,3})\s*دیگر", value)
+    if not m:
+        return None
+    total = 0
+    for num, unit in re.findall(r"(\d+)\s*(ساعت|دقیقه|ثانیه)", m.group(1)):
+        total += int(num) * {"ساعت": 3600, "دقیقه": 60, "ثانیه": 1}[unit]
+    return total if 0 < total <= 86400 else None
+
+
+async def _mozy_bank_claim(client, uid: int, chat_id: int, trigger_id: int):
+    """بانک -> click «سود» on the bot's reply -> click «برداشت» on the profit panel.
+    Returns True on success, ("wait", seconds) if profit is not ready yet, False otherwise."""
+    me_id = None
+    with contextlib.suppress(Exception):
+        me_id = int((await client.get_me()).id)
+    fkey = (uid, chat_id, "bank")
+    try:
+        # Step 1: bank panel that replies to our «بانک» and has a «سود» button.
+        bank_msg = None
+        deadline = time.monotonic() + MOZY_MONKEY_RESPONSE_WAIT
+        while time.monotonic() < deadline and bank_msg is None:
+            for message in await _mozy_bot_replies(client, chat_id, trigger_id, me_id):
+                if _mozy_find_button(message, "سود") is not None:
+                    bank_msg = message
+                    break
+            if bank_msg is None:
+                await asyncio.sleep(MOZY_POLL_INTERVAL)
+        if bank_msg is None:
+            print(f"[MOZY {uid}] bank: no bank panel reply chat={chat_id}")
+            return False
+        await _mozy_find_button(bank_msg, "سود").click()
+        print(f"[MOZY {uid}] bank: clicked «سود» chat={chat_id} msg={bank_msg.id}")
+
+        # Step 2: profit panel (edited message or a new reply) with «برداشت»
+        # but WITHOUT the main-bank buttons, so we never press the bank withdraw.
+        deadline = time.monotonic() + MOZY_MONKEY_RESPONSE_WAIT
+        while time.monotonic() < deadline:
+            await asyncio.sleep(MOZY_POLL_INTERVAL)
+            for message in await _mozy_bot_replies(client, chat_id, trigger_id, me_id, extra_ids=(bank_msg.id,)):
+                labels = _mozy_labels(message)
+                if "برداشت" not in labels or any(x in labels for x in ("سود", "واریز", "کارت به کارت")):
+                    continue
+                text = getattr(message, "raw_text", "") or ""
+                if "سود" not in text:
+                    continue
+                wait = _mozy_parse_wait(text)
+                if wait:
+                    print(f"[MOZY {uid}] bank: profit not ready, {wait}s left chat={chat_id}")
+                    return ("wait", wait)
+                await _mozy_find_button(message, "برداشت").click()
+                print(f"[MOZY {uid}] bank: clicked «برداشت» chat={chat_id} msg={message.id}")
+                return True
+        print(f"[MOZY {uid}] bank: profit panel not found chat={chat_id}")
+        return False
+    except FloodWaitError as exc:
+        _mozy_flood_until[fkey] = time.time() + int(exc.seconds)
+        await asyncio.sleep(int(exc.seconds))
+        return False
+    except Exception as exc:
+        print(f"[MOZY {uid}] bank claim failed chat={chat_id}: {type(exc).__name__}: {exc}")
+        return False
 
 
 async def _mozy_monkey_claim(client, uid: int, chat_id: int, trigger_message_id: int):
@@ -13363,7 +13487,7 @@ def _mozy_banana_next_word(uid: int, chat_id: int) -> str:
 async def _mozy_execute(client, uid: int, chat_id: int, feature: str):
     key = (int(uid), int(chat_id), feature)
     if key in _mozy_running:
-        return False
+        return None
     flood_until = float(_mozy_flood_until.get(key, 0) or 0)
     if flood_until > time.time():
         return False
@@ -13383,10 +13507,9 @@ async def _mozy_execute(client, uid: int, chat_id: int, feature: str):
         if trigger_id <= 0:
             return False
         if feature == "monkey":
-            # Even if the claim fails, count this run so «میمون» is not spammed;
-            # the next attempt happens after the normal 12-hour interval.
-            await _mozy_monkey_claim(client, uid, chat_id, trigger_id)
-            return True
+            return await _mozy_monkey_claim(client, uid, chat_id, trigger_id)
+        if feature == "bank":
+            return await _mozy_bank_claim(client, uid, chat_id, trigger_id)
         if feature in {"pishi", "fishing"}:
             await _mozy_find_and_click(client, uid, chat_id, trigger_id, feature)
         return True
@@ -13406,7 +13529,9 @@ async def _mozy_run_and_record(client, uid: int, chat_id: int, feature: str):
     """Run one feature independently and persist its own last_run timestamp."""
     try:
         ok = await _mozy_execute(client, uid, chat_id, feature)
-        if not ok:
+        if ok is None:
+            return
+        if not ok and feature not in MOZY_CLAIM_FEATURES:
             return
         configs = _mozy_configs(uid)
         cfg, _ = _mozy_chat_config(uid, chat_id, create=False)
@@ -13415,7 +13540,20 @@ async def _mozy_run_and_record(client, uid: int, chat_id: int, feature: str):
         item = cfg.get(feature)
         if not isinstance(item, dict) or not item.get("enabled"):
             return
-        item["last_run"] = time.time()
+        now = time.time()
+        if feature in MOZY_CLAIM_FEATURES:
+            interval = max(1, int(item.get("interval", 0) or MOZY_DEFAULT_INTERVALS[feature]))
+            if ok is True:
+                # Successful claim: the next 12h / 24h window starts right now.
+                item["last_run"] = now
+            elif isinstance(ok, tuple) and ok and ok[0] == "wait":
+                # Not ready yet: come back exactly when it is (+5s).
+                item["last_run"] = now - interval + int(ok[1]) + 5
+            else:
+                # Bot silent / claim failed: retry in 15 minutes.
+                item["last_run"] = now - interval + MOZY_RETRY_DELAY
+        else:
+            item["last_run"] = now
         configs[str(int(chat_id))] = cfg
         _mozy_save_configs(uid, configs)
     except asyncio.CancelledError:
@@ -13464,6 +13602,8 @@ async def _handle_mozy_command(event, uid: int, text: str):
         "اسپین خودکار خاموش": ("spin", False),
         "درآمد میمون روشن": ("monkey", True),
         "درآمد میمون خاموش": ("monkey", False),
+        "سود بانک روشن": ("bank", True),
+        "سود بانک خاموش": ("bank", False),
     }
     command = switches.get(normalized)
     if command:
