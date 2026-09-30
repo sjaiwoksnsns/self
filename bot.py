@@ -5112,7 +5112,7 @@ async def _premium_relay_applied(event, message_id, timeout=1.2):
             return True
         if time.time() >= deadline:
             return False
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(0.08)
 
 
 async def _send_self_premium_inline_and_click(event, query: str):
@@ -5138,23 +5138,27 @@ async def _send_self_premium_inline_and_click(event, query: str):
     uid = getattr(event, "sender_id", None)
 
     # Lower bound for the fallback lookup: never pick an older leftover relay.
-    before_id = None
-    try:
-        latest = await _premium_relay_recent(event, 1)
-        if latest:
-            before_id = int(latest[0].id)
-    except Exception as exc:
-        print(f"[PREMIUM AUTO CLICK] pre-send message lookup failed: {exc!r}")
+    # Runs in parallel with the inline query instead of in front of it.
+    async def _latest_id():
+        try:
+            latest = await _premium_relay_recent(event, 1)
+            return int(latest[0].id) if latest else None
+        except Exception as exc:
+            print(f"[PREMIUM AUTO CLICK] pre-send message lookup failed: {exc!r}")
+            return None
 
     bot_entity = await _get_inline_bot_entity(event.client)
-    results = await event.client(
-        GetInlineBotResultsRequest(
-            bot=bot_entity,
-            peer=event.peer_id,
-            geo_point=None,
-            query=query,
-            offset="",
-        )
+    before_id, results = await asyncio.gather(
+        _latest_id(),
+        event.client(
+            GetInlineBotResultsRequest(
+                bot=bot_entity,
+                peer=event.peer_id,
+                geo_point=None,
+                query=query,
+                offset="",
+            )
+        ),
     )
     if not getattr(results, "results", None):
         raise RuntimeError(f"Inline bot returned no result for query: {query}")
@@ -5209,14 +5213,18 @@ async def _send_self_premium_inline_and_click(event, query: str):
     # From here on the relay message EXISTS in the chat. Never send again.
     # ------------------------------------------------------------------
 
-    # The user's plain source message goes first, immediately after the send.
+    # Delete the user's plain source message in the BACKGROUND so the button
+    # press below goes out immediately (no extra round trip in between).
+    async def _delete_source():
+        try:
+            await event.delete()
+            return True
+        except Exception as exc:
+            print(f"[PREMIUM AUTO CLICK] source delete failed: {type(exc).__name__}: {exc!r}")
+            return False
+
+    delete_task = asyncio.create_task(_delete_source())
     source_deleted = False
-    try:
-        await event.delete()
-        source_deleted = True
-        print(f"[PREMIUM AUTO CLICK] source deleted source_msg={getattr(event.message, 'id', None)!r}")
-    except Exception as exc:
-        print(f"[PREMIUM AUTO CLICK] source delete failed: {type(exc).__name__}: {exc!r}")
 
     # Exact message id of the relay (matched by our random_id).
     message_id = None
@@ -5243,8 +5251,8 @@ async def _send_self_premium_inline_and_click(event, query: str):
     # Fallback only when the ids could not be read from Telegram's answer:
     # look for the NEW message carrying the relay button.
     if message_id is None or callback_data is None:
-        for _ in range(40):
-            await asyncio.sleep(0.05)
+        for _ in range(60):
+            await asyncio.sleep(0.03)
             try:
                 recent = await _premium_relay_recent(event, 15)
             except Exception as exc:
@@ -5271,6 +5279,7 @@ async def _send_self_premium_inline_and_click(event, query: str):
                 break
 
     if message_id is None or callback_data is None:
+        source_deleted = await delete_task
         raise _PremiumRelayPostSendError(
             "Fresh premium inline message could not be located",
             source_deleted=source_deleted,
@@ -5286,7 +5295,7 @@ async def _send_self_premium_inline_and_click(event, query: str):
     # self user. It triggers the existing bot CallbackQuery -> relay: path.
     # Only the PRESS is retried (fresh RPC each time), the message is not.
     last_error = None
-    for attempt, delay in enumerate((0.0, 0.25, 0.6, 1.2), 1):
+    for attempt, delay in enumerate((0.0, 0.1, 0.3, 0.7), 1):
         if delay:
             await asyncio.sleep(delay)
         try:
@@ -5327,12 +5336,13 @@ async def _send_self_premium_inline_and_click(event, query: str):
             f"[PREMIUM AUTO CLICK] success uid={uid} "
             f"message_id={message_id} attempt={attempt} applied={applied!r}"
         )
-        return source_deleted
+        return await delete_task
 
     # Could not press it: remove the dead relay message so no stray "." is
     # left behind; the caller then delivers the plain text instead.
     with contextlib.suppress(Exception):
         await event.client.delete_messages(event.peer_id, [message_id])
+    source_deleted = await delete_task
     raise _PremiumRelayPostSendError(
         f"press failed after retries: {type(last_error).__name__}: {last_error!r}",
         source_deleted=source_deleted,
@@ -9572,6 +9582,12 @@ def _logo_font_path(key):
     if _LOGO_FONT_INDEX is None:
         wanted = {n for names in _LOGO_FONT_FILES.values() for n in names}
         _LOGO_FONT_INDEX = {}
+        # Fonts dropped straight next to bot.py (repo root) — top level only.
+        with contextlib.suppress(Exception):
+            here = Path(__file__).resolve().parent
+            for fname in os.listdir(here):
+                if fname in wanted:
+                    _LOGO_FONT_INDEX[fname] = here / fname
         for base in _LOGO_FONT_DIRS:
             if not base.exists():
                 continue
@@ -10174,6 +10190,23 @@ async def send_generated_image(event, media, caption, filename="generated.jpg"):
         return True
     raise ValueError("unsupported_media")
 
+LOGO_TITLE_MAX = 30
+LOGO_SUBTITLE_MAX = 40
+_LOGO_URL_RE = re.compile(r"(https?://|www\.|\.com\b|\.exe\b|[\\/<>{}\[\]`])", re.I)
+
+
+def _logo_quote(text):
+    return f"<blockquote>{text}</blockquote>"
+
+
+async def _logo_fail(event, reason="دوباره امتحان کن."):
+    with contextlib.suppress(Exception):
+        await event.edit(
+            _logo_quote(f"❌ <b>خطای ساخت لوگو | HTX</b>\n{reason}"),
+            parse_mode="html",
+        )
+
+
 async def _self_logo_command(event, uid, text):
     m = re.fullmatch(r"لوگو\s+([0-9۰-۹]{1,3})\s+(.+)", text.strip(), flags=re.S | re.I)
     if not m:
@@ -10181,27 +10214,45 @@ async def _self_logo_command(event, uid, text):
     logo_id = int(_fa_digits(m.group(1)))
     logo_text = m.group(2).strip()
     if logo_id not in LOGO_TEMPLATES:
-        await event.edit(
-            premium_ui_text(f"❌ شماره لوگو باید بین <b>۱ تا {len(LOGO_TEMPLATES)}</b> باشد."),
-            parse_mode="html",
+        await _logo_fail(event, f"شماره قالب باید بین <b>1 تا {len(LOGO_TEMPLATES)}</b> باشد.")
+        return True
+
+    # Reject junk input (pasted logs, links, multi-line text) before rendering.
+    title, _, subtitle = logo_text.partition("|")
+    title, subtitle = title.strip(), subtitle.strip()
+    if "\n" in logo_text or not title:
+        await _logo_fail(event, "متن لوگو باید یک خط باشد.\nمثال: <code>.لوگو 7 HusteRIX</code>")
+        return True
+    if _LOGO_URL_RE.search(logo_text):
+        await _logo_fail(event, "لینک و کاراکترهای خاص مجاز نیست؛ فقط اسم برند را بنویس.")
+        return True
+    if len(title) > LOGO_TITLE_MAX or len(subtitle) > LOGO_SUBTITLE_MAX:
+        await _logo_fail(
+            event,
+            f"متن خیلی طولانی است (حداکثر {LOGO_TITLE_MAX} حرف، زیرعنوان {LOGO_SUBTITLE_MAX} حرف).",
         )
         return True
+
     with contextlib.suppress(Exception):
-        await event.edit(premium_ui_text("🎨 <b>در حال ساخت لوگو…</b>"), parse_mode="html")
+        await event.edit(_logo_quote("⏳ <b>در حال ساخت لوگو | HTX</b>"), parse_mode="html")
     try:
-        media = await generate_logo(logo_id, logo_text)
-        caption = (
-            "🎨 <b>Logo Generator</b>\n\n"
-            f"✦ <b>متن:</b> {html.escape(logo_text)}\n"
+        media = await asyncio.wait_for(generate_logo(logo_id, logo_text), timeout=45)
+        sub_line = f"\n✦ <b>زیرعنوان:</b> {html.escape(subtitle)}" if subtitle else ""
+        caption = _logo_quote(
+            "🎨 <b>لوگو ساخته شد | HTX</b>\n"
+            f"✦ <b>متن:</b> {html.escape(title)}{sub_line}\n"
             f"✦ <b>طرح:</b> #{logo_id} • {LOGO_TEMPLATES[logo_id][1]}"
         )
         await send_generated_image(event, media, caption, f"logo_{logo_id}.jpg")
-        with contextlib.suppress(Exception):
-            await event.delete()
     except ImportError:
-        await event.edit(premium_ui_text("❌ برای ساخت لوگو نصب Pillow لازم است."), parse_mode="html")
-    except Exception:
-        await event.edit(premium_ui_text("❌ <b>ساخت لوگو ناموفق بود؛ دوباره تلاش کن.</b>"), parse_mode="html")
+        await _logo_fail(event, "کتابخانه Pillow روی سرور نصب نیست.")
+        return True
+    except Exception as exc:
+        print(f"[LOGO {uid}] template={logo_id} failed: {type(exc).__name__}: {exc!r}")
+        await _logo_fail(event)
+        return True
+    with contextlib.suppress(Exception):
+        await event.delete()
     return True
 
 
@@ -14331,7 +14382,7 @@ async def inline_query_handler(event):
                 id=token,
                 description=raw_query[:60],
                 text=".",
-                buttons=[[Button.inline("👆 اعمال ایموجی پریمیوم", f"relay:{token}".encode())]],
+                buttons=[[Button.inline("ㅤ", f"relay:{token}".encode())]],  # invisible label: pressed by SELF in ms
             )
             await event.answer([result], cache_time=0, private=True)
             return
@@ -15727,7 +15778,9 @@ async def callbacks(event):
         # Exactly the pre-update sequence: answer first, then edit this
         # exact inline message (already carries the real tg-emoji HTML, so
         # it is sent through as-is — no premium_ui_text() re-wrap here).
-        await safe_answer(event, "💎 اعمال شد")
+        # Edit FIRST (that is what removes the button on screen) and answer
+        # the callback in parallel, instead of waiting a round trip for it.
+        answer_task = asyncio.create_task(safe_answer(event))
         try:
             await safe_callback_edit(
                 event,
@@ -15742,6 +15795,8 @@ async def callbacks(event):
                 f"{type(exc).__name__}: {exc!r}"
             )
         _PREMIUM_RELAY_PENDING.pop(token, None)
+        with contextlib.suppress(Exception):
+            await answer_task
         return
 
     # Admin can always enter the management panel and switch update mode.
@@ -17175,7 +17230,17 @@ async def main():
     print("📁 Database:", DATA_DIR)
     print("=" * 55)
 
-    await bot.start(bot_token=BOT_TOKEN)
+    # FloodWait-safe login: instead of crashing (Railway would restart the
+    # container and hit ImportBotAuthorization again, making the ban longer),
+    # wait out Telegram's cooldown and retry in-process.
+    while True:
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            break
+        except FloodWaitError as exc:
+            wait = int(getattr(exc, "seconds", 60)) + 5
+            print(f"⏳ Bot login FloodWait: waiting {wait}s before retrying (do NOT redeploy)")
+            await asyncio.sleep(wait)
 
     me = await bot.get_me()
     print(f"✅ Bot: @{me.username if me else 'unknown'}")
