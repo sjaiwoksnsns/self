@@ -2021,11 +2021,12 @@ PANEL_LABELS.update({
     "miowy_pishi": "🐱 پیشی خودکار", "miowy_mew": "😼 میو خودکار",
     "miowy_fishing": "🎣 ماهیگیری خودکار", "miowy_status": "😼 وضعیت میویی",
     "mozy_banana": "🍌 موز خودکار", "mozy_spin": "🎰 اسپین خودکار",
+    "mozy_monkey": "🐒 میمون",
     "mozy_status": "📢 وضعیت موزی",
 })
 PANEL_GROUPS = {
     "miowy_group": ("🐱 میویی", ["miowy_pishi", "miowy_mew", "miowy_fishing", "miowy_status"]),
-    "mozy_group": ("🍌 موزی", ["mozy_banana", "mozy_spin", "mozy_status"]),
+    "mozy_group": ("🍌 موزی", ["mozy_banana", "mozy_spin", "mozy_monkey", "mozy_status"]),
 }
 
 # Items that already open a full dedicated screen elsewhere in this file —
@@ -2485,11 +2486,17 @@ PANEL_COMMAND_SCREENS = {
     ]),
     "mozy_status": ("وضعیت موزی", [
         "دستورات",
-        "<code>.وضعیت موزی</code>\nوضعیت موز و اسپین خودکار گروه",
+        "<code>.وضعیت موزی</code>\nوضعیت موز، اسپین و درآمد میمون گروه",
     ]),
     "mozy_banana": ("موز خودکار", [
         "دستورات • داخل گروه",
         "<code>.موز خودکار روشن</code>\n<code>.موز خودکار خاموش</code>\nهر ۳ دقیقه",
+    ]),
+    "mozy_monkey": ("میمون", [
+        "درآمد خودکار میمون • داخل گروه",
+        "<code>.درآمد میمون روشن</code>\n<code>.درآمد میمون خاموش</code>\n"
+        "هر ۱۲ ساعت داخل همان گپی که روشن شده «میمون» ارسال می‌شود و روی پیامی که ربات "
+        "در جواب (ریپلای) همان پیام می‌فرستد، دکمه «💰 برداشت همه» زده می‌شود.",
     ]),
     "mozy_spin": ("اسپین خودکار", [
         "دستورات • داخل گروه",
@@ -13028,19 +13035,24 @@ async def _presence_loop(client, uid):
 # ============================================================
 
 MOZY_CONFIG_KEY = "mozy_configs_v2"
-MOZY_FEATURES = ("banana", "spin")
+MOZY_FEATURES = ("banana", "spin", "monkey")
 MOZY_COMMANDS = {
     "banana": "موز",
     "spin": "اسپین",
+    "monkey": "میمون",
 }
 MOZY_DISPLAY = {
     "banana": "🍌 موز خودکار",
     "spin": "🎰 اسپین خودکار",
+    "monkey": "🐒 درآمد میمون",
 }
 MOZY_DEFAULT_INTERVALS = {
     "banana": 185,   # 3 minutes + 5 seconds
     "spin": 21605,   # 6 hours + 5 seconds
+    "monkey": 43205, # 12 hours + 5 seconds
 }
+MOZY_MONKEY_BUTTON = "برداشت همه"
+MOZY_MONKEY_RESPONSE_WAIT = 30.0
 MOZY_BANANA_WORDS = ("موز", "مظ")
 MOZY_BANANA_RANDOM_CHANCE = 0.35   # chance a turn breaks the strict alternation
 _mozy_banana_last = {}             # (uid, chat_id) -> last word sent
@@ -13275,6 +13287,64 @@ async def _mozy_find_and_click(client, uid: int, chat_id: int, trigger_message_i
     return False
 
 
+def _mozy_norm_label(text: str) -> str:
+    value = str(text or "")
+    value = value.replace("\u200c", " ").replace("\u200f", "").replace("\u200e", "")
+    value = value.replace("ي", "ی").replace("ك", "ک")
+    value = re.sub(r"[^\w\s]", " ", value)
+    return " ".join(value.split())
+
+
+async def _mozy_monkey_claim(client, uid: int, chat_id: int, trigger_message_id: int):
+    """Click «برداشت همه» ONLY on the bot message that replies to our «میمون»."""
+    deadline = time.monotonic() + MOZY_MONKEY_RESPONSE_WAIT
+    target = _mozy_norm_label(MOZY_MONKEY_BUTTON)
+    me_id = None
+    with contextlib.suppress(Exception):
+        me_id = int((await client.get_me()).id)
+    while time.monotonic() < deadline:
+        try:
+            async for message in client.iter_messages(chat_id, min_id=int(trigger_message_id), limit=30):
+                mid = int(getattr(message, "id", 0) or 0)
+                if mid <= int(trigger_message_id):
+                    continue
+                if me_id is not None and int(getattr(message, "sender_id", 0) or 0) == me_id:
+                    continue
+                reply_to = getattr(message, "reply_to_msg_id", None)
+                if reply_to is None:
+                    header = getattr(message, "reply_to", None)
+                    reply_to = getattr(header, "reply_to_msg_id", None)
+                if int(reply_to or 0) != int(trigger_message_id):
+                    continue
+                if not getattr(message, "buttons", None):
+                    continue
+                for button in _mozy_iter_buttons(message):
+                    label = str(getattr(button, "text", "") or "")
+                    if _mozy_norm_label(label) != target:
+                        continue
+                    try:
+                        await button.click()
+                        print(f"[MOZY {uid}] monkey claim clicked chat={chat_id} msg={mid} button={label!r}")
+                        return True
+                    except FloodWaitError as exc:
+                        _mozy_flood_until[(uid, chat_id, "monkey")] = time.time() + int(exc.seconds)
+                        await asyncio.sleep(int(exc.seconds))
+                        return False
+                    except Exception as exc:
+                        print(f"[MOZY {uid}] monkey claim click failed msg={mid}: {type(exc).__name__}: {exc}")
+                        return False
+        except FloodWaitError as exc:
+            _mozy_flood_until[(uid, chat_id, "monkey")] = time.time() + int(exc.seconds)
+            await asyncio.sleep(int(exc.seconds))
+            return False
+        except Exception as exc:
+            print(f"[MOZY {uid}] monkey scan failed chat={chat_id}: {type(exc).__name__}: {exc}")
+            return False
+        await asyncio.sleep(MOZY_POLL_INTERVAL)
+    print(f"[MOZY {uid}] monkey: no reply with «{MOZY_MONKEY_BUTTON}» found chat={chat_id}")
+    return False
+
+
 def _mozy_banana_next_word(uid: int, chat_id: int) -> str:
     """Mostly alternates موز / مظ / موز / مظ; now and then it is random, so
     repeats like مظ مظ موز or موز موز happen too."""
@@ -13312,6 +13382,11 @@ async def _mozy_execute(client, uid: int, chat_id: int, feature: str):
         trigger_id = int(getattr(trigger, "id", 0) or 0)
         if trigger_id <= 0:
             return False
+        if feature == "monkey":
+            # Even if the claim fails, count this run so «میمون» is not spammed;
+            # the next attempt happens after the normal 12-hour interval.
+            await _mozy_monkey_claim(client, uid, chat_id, trigger_id)
+            return True
         if feature in {"pishi", "fishing"}:
             await _mozy_find_and_click(client, uid, chat_id, trigger_id, feature)
         return True
@@ -13387,6 +13462,8 @@ async def _handle_mozy_command(event, uid: int, text: str):
         "موز خودکار خاموش": ("banana", False),
         "اسپین خودکار روشن": ("spin", True),
         "اسپین خودکار خاموش": ("spin", False),
+        "درآمد میمون روشن": ("monkey", True),
+        "درآمد میمون خاموش": ("monkey", False),
     }
     command = switches.get(normalized)
     if command:
