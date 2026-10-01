@@ -453,8 +453,11 @@ MIN_DIAMOND_PURCHASE = 1000
 DIAMOND_PRICE_TOMAN = 40
 
 # Local, free speech-to-text configuration.
-# No API key is required. The Persian STT engine is faster-whisper + Whisper large-v3.
-WHISPER_MODEL = os.getenv("WHISPER_MODEL", "large-v3")
+# No API key is required. The Persian STT engine is faster-whisper (CTranslate2).
+# Default is "medium": far lighter and faster than large-v3 (~1.5GB RAM, roughly
+# real-time on a plain CPU) while still accurate for Persian. On a weak server set
+# WHISPER_MODEL=small (or base) for an even lighter engine.
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "fa")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = os.getenv(
@@ -7282,11 +7285,12 @@ async def _ensure_pip_module(module, package, force=False, timeout=900):
 
 
 # ------------------------------------------------------------------ speech to text
-# Default = Whisper large-v3-turbo (CTranslate2): near large-v3 accuracy for
-# Persian but ~6x faster on CPU. Set WHISPER_MODEL to override (e.g. large-v3, medium).
+# Default = Whisper "medium" (CTranslate2): much lighter than large-v3 but still
+# accurate for Persian. If it cannot be loaded (low RAM / no disk), we fall back
+# to progressively lighter models so voice-to-text never dies on a small server.
 _STT_MODEL_CANDIDATES = (
-    [WHISPER_MODEL] if os.getenv("WHISPER_MODEL")
-    else ["mobiuslabsgmbh/faster-whisper-large-v3-turbo", "large-v3-turbo", "medium", "small"]
+    [WHISPER_MODEL, "small", "base"] if os.getenv("WHISPER_MODEL")
+    else ["medium", "small", "base"]
 )
 _stt_model = {"obj": None, "name": None}
 _stt_model_lock = None  # threading.Lock, created lazily
@@ -7361,12 +7365,35 @@ def _stt_dedupe(text):
     return " ".join(words)
 
 
+def _stt_decode_audio(path):
+    """Decode ANY audio/video file to 16kHz mono float32 with ffmpeg.
+
+    faster-whisper normally decodes with PyAV, which crashes on recent `av`
+    releases ("open() got an unexpected keyword argument 'metadata_errors'").
+    Decoding here ourselves makes voice-to-text independent of that package.
+    """
+    import numpy as np
+
+    ffmpeg = globals().get("FFMPEG_BIN") or shutil.which("ffmpeg") or "ffmpeg"
+    proc = subprocess.run(
+        [ffmpeg, "-nostdin", "-threads", "1", "-hide_banner", "-loglevel", "error",
+         "-i", str(path), "-f", "f32le", "-acodec", "pcm_f32le",
+         "-ac", "1", "-ar", "16000", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        err = proc.stderr.decode("utf-8", "ignore").strip()[-300:]
+        raise RuntimeError(f"audio_decode_failed: {err or 'empty output'}")
+    return np.frombuffer(proc.stdout, dtype=np.float32).copy()
+
+
 def _stt_transcribe_sync(path, state):
     model = _stt_get_model(state)
+    audio = _stt_decode_audio(path)
     state["stage"] = "transcribe"
     state["percent"] = 0.0
     segments, info = model.transcribe(
-        str(path), language=WHISPER_LANGUAGE or None, task="transcribe",
+        audio, language=WHISPER_LANGUAGE or None, task="transcribe",
         beam_size=WHISPER_BEAM_SIZE, temperature=[0.0, 0.2, 0.4],
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 300},
@@ -7374,7 +7401,7 @@ def _stt_transcribe_sync(path, state):
         compression_ratio_threshold=2.4, log_prob_threshold=-1.0, no_speech_threshold=0.6,
         initial_prompt="متن فارسی محاوره‌ای با علائم نگارشی درست.",
     )
-    duration = float(getattr(info, "duration", 0) or 0)
+    duration = float(getattr(info, "duration", 0) or 0) or (len(audio) / 16000.0)
     pieces = []
     for seg in segments:
         if state.get("cancel"):
@@ -7473,6 +7500,8 @@ async def _self_transcribe_reply(event, uid):
     try:
         if not await _ensure_pip_module("faster_whisper", "faster-whisper"):
             return "❌ نصب خودکار موتور ویس‌به‌متن انجام نشد؛ دستی بزن: <code>pip install -U faster-whisper</code>"
+        if not await _ensure_pip_module("numpy", "numpy"):
+            return "❌ نصب خودکار numpy انجام نشد؛ دستی بزن: <code>pip install -U numpy</code>"
 
         def dl_progress(cur, total):
             if total:
@@ -7516,6 +7545,9 @@ async def _self_transcribe_reply(event, uid):
                 if "model_load_failed" in msg:
                     return ("❌ مدل تشخیص گفتار دانلود/بارگذاری نشد (اینترنت سرور به huggingface یا رم کافی رو چک کن).\n"
                             "برای سرور ضعیف: <code>WHISPER_MODEL=small</code>")
+                if "audio_decode_failed" in msg:
+                    return ("❌ صدای این پیام خوانده نشد. مطمئن شو ffmpeg روی سرور نصب است:\n"
+                            "<code>apt install -y ffmpeg</code>")
                 if "Invalid data" in msg or "avcodec" in msg.casefold() or "decode" in msg.casefold():
                     return "❌ فایل صوتی خراب است یا قابل خواندن نیست."
                 return "❌ موتور تبدیل ویس خطا داد؛ دوباره تلاش کن."
